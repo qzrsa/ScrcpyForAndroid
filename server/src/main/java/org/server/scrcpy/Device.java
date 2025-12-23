@@ -12,7 +12,7 @@ public final class Device {
 
     private ScreenInfo screenInfo;
     private RotationListener rotationListener;
-    // 新增：保存 Options 对象
+    // 1. 新增：保存 Options 对象 (用于编码器选择)
     private final Options options;
 
     public Device(Options options) {
@@ -23,6 +23,7 @@ public final class Device {
             public void onRotationChanged(int rotation) throws RemoteException {
                 synchronized (Device.this) {
                     screenInfo = screenInfo.withRotation(rotation);
+                    // notify
                     if (rotationListener != null) {
                         rotationListener.onRotationChanged(rotation);
                     }
@@ -31,7 +32,7 @@ public final class Device {
         });
     }
 
-    // 新增 Getter
+    // 2. 新增：Getter 方法
     public Options getOptions() {
         return options;
     }
@@ -49,7 +50,7 @@ public final class Device {
         DisplayInfo displayInfo = ServiceManager.getDisplayManager().getDisplayInfo();
         boolean rotated = (displayInfo.getRotation() & 1) != 0;
         Size deviceSize = displayInfo.getSize();
-        int w = deviceSize.getWidth() & ~7;
+        int w = deviceSize.getWidth() & ~7; // in case it's not a multiple of 8
         int h = deviceSize.getHeight() & ~7;
         if (maxSize > 0) {
             if (BuildConfig.DEBUG && maxSize % 8 != 0) {
@@ -60,6 +61,7 @@ public final class Device {
             int minor = portrait ? w : h;
             if (major > maxSize) {
                 int minorExact = minor * maxSize / major;
+                // +4 to round the value to the nearest multiple of 8
                 minor = (minorExact + 4) & ~7;
                 major = maxSize;
             }
@@ -71,8 +73,8 @@ public final class Device {
     }
 
     public Point getPhysicalPoint(Position position) {
-        @SuppressWarnings("checkstyle:HiddenField")
-        ScreenInfo screenInfo = getScreenInfo();
+        @SuppressWarnings("checkstyle:HiddenField") // it hides the field on purpose, to read it with a lock
+        ScreenInfo screenInfo = getScreenInfo(); // read with synchronization
         Size videoSize = screenInfo.getVideoSize();
         Size clientVideoSize = position.getScreenSize();
         if (!videoSize.equals(clientVideoSize)) {
@@ -80,6 +82,17 @@ public final class Device {
         }
         Size deviceSize = screenInfo.getDeviceSize();
         Point point = position.getPoint();
+        int scaledX = point.getX() * deviceSize.getWidth() / videoSize.getWidth();
+        int scaledY = point.getY() * deviceSize.getHeight() / videoSize.getHeight();
+        return new Point(scaledX, scaledY);
+    }
+
+    // 3. 补回：缺失的自定义方法，解决编译报错
+    public Point NewgetPhysicalPoint(Point point) {
+        @SuppressWarnings("checkstyle:HiddenField")
+        ScreenInfo screenInfo = getScreenInfo();
+        Size videoSize = screenInfo.getVideoSize();
+        Size deviceSize = screenInfo.getDeviceSize();
         int scaledX = point.getX() * deviceSize.getWidth() / videoSize.getWidth();
         int scaledY = point.getY() * deviceSize.getHeight() / videoSize.getHeight();
         return new Point(scaledX, scaledY);
