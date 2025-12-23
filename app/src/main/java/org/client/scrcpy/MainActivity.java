@@ -38,6 +38,8 @@ import android.widget.ListPopupWindow;
 import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.Toast;
+import android.media.MediaCodecList;
+import android.media.MediaCodecInfo;
 
 import org.client.scrcpy.utils.HttpRequest;
 import org.client.scrcpy.utils.PreUtils;
@@ -53,6 +55,8 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.HashMap;
+import java.util.List;
+import java.util.ArrayList;
 
 
 public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, SensorEventListener {
@@ -80,6 +84,9 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
     private Surface surface;
     private Scrcpy scrcpy;
     private long timestamp = 0;
+
+    // 新增：选中的编码器
+    private String selectedEncoder = "-";
 
     // private byte[] fileBase64;
     private LinearLayout linearLayout;
@@ -260,6 +267,9 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
 //            showDisplayWindow();
 //        });
         get_saved_preferences();
+        
+        // 初始化编码器下拉框
+        initEncoderSpinner();
 
         EditText editText = findViewById(R.id.editText_server_host);
 
@@ -276,6 +286,57 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
                 scrollView.setVisibility(View.INVISIBLE);
             }
         }
+    }
+    
+    // 初始化编码器下拉框
+    private void initEncoderSpinner() {
+        Spinner encoderSpinner = findViewById(R.id.spinner_encoder);
+        if (encoderSpinner == null) return;
+        List<String> encoders = new ArrayList<>();
+        encoders.add("Default"); // 默认选项
+
+        // 获取支持 video/avc (H.264) 的编码器
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            MediaCodecList list = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
+            for (MediaCodecInfo info : list.getCodecInfos()) {
+                if (!info.isEncoder()) continue;
+                try {
+                    MediaCodecInfo.CodecCapabilities caps = info.getCapabilitiesForType("video/avc");
+                    if (caps != null) {
+                        encoders.add(info.getName());
+                    }
+                } catch (IllegalArgumentException e) {
+                    // 忽略不支持 avc 的编码器
+                }
+            }
+        }
+
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, encoders);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        encoderSpinner.setAdapter(adapter);
+
+        // 恢复上次的选择
+        String savedEncoder = PreUtils.get(context, "saved_encoder_name", "Default");
+        int spinnerPosition = adapter.getPosition(savedEncoder);
+        if (spinnerPosition >= 0) {
+            encoderSpinner.setSelection(spinnerPosition);
+        }
+
+        encoderSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                String name = encoders.get(position);
+                if ("Default".equals(name)) {
+                    selectedEncoder = "-";
+                } else {
+                    selectedEncoder = name;
+                }
+                PreUtils.put(context, "saved_encoder_name", name);
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {}
+        });
     }
 
     private void showListPopulWindow(EditText mEditText) {
@@ -325,7 +386,7 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
         final EditText editTextServerHost = findViewById(R.id.editText_server_host);
         final Switch aSwitch0 = findViewById(R.id.switch0);
         final Switch aSwitch1 = findViewById(R.id.switch1);
-        final Switch aSwitch2 = findViewById(R.id.switch2); // 新增
+        final Switch aSwitch2 = findViewById(R.id.switch2); // Switch2
 
         String historySpServerAdr = PreUtils.get(context, Constant.CONTROL_REMOTE_ADDR, "");
         if (TextUtils.isEmpty(historySpServerAdr)) {
@@ -338,7 +399,7 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
         }
         aSwitch0.setChecked(PreUtils.get(context, Constant.CONTROL_NO, false));
         aSwitch1.setChecked(PreUtils.get(context, Constant.CONTROL_NAV, false));
-        aSwitch2.setChecked(PreUtils.get(context, Constant.KEEP_BACKGROUND, false)); // 新增
+        aSwitch2.setChecked(PreUtils.get(context, Constant.KEEP_BACKGROUND, false)); // 加载后台保持配置
 
         setSpinner(R.array.options_resolution_values, R.id.spinner_video_resolution, Constant.PREFERENCE_SPINNER_RESOLUTION);
         setSpinner(R.array.options_bitrate_keys, R.id.spinner_video_bitrate, Constant.PREFERENCE_SPINNER_BITRATE);
@@ -360,8 +421,8 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
                 // aSwitch1.setVisibility(View.VISIBLE);
             }
         });
-
-        // 新增监听器
+        
+        // 监听后台保持开关
         aSwitch2.setOnCheckedChangeListener((buttonView, isChecked) -> {
             PreUtils.put(context, Constant.KEEP_BACKGROUND, isChecked);
         });
@@ -789,11 +850,14 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
                 } catch (IOException e) {
                     Log.d("Scrcpy", "File scrcpy-server.jar write faild");
                 }
+                
+                // 核心修改：这里传入了 selectedEncoder 参数，解决了编译错误
                 if (sendCommands.SendAdbCommands(context, serverHost,
                         serverPort,
                         localForwardPort,
                         Scrcpy.LOCAL_IP,
-                        videoBitrate, Math.max(screenHeight, screenWidth)) == 0) {
+                        videoBitrate, Math.max(screenHeight, screenWidth),
+                        selectedEncoder) == 0) {
                     ThreadUtils.post(() -> {
                         if (!MainActivity.this.isFinishing()) {
                             // 进入主线程
