@@ -13,8 +13,12 @@ public final class Device {
     // private final ServiceManager serviceManager = new ServiceManager();
     private ScreenInfo screenInfo;
     private RotationListener rotationListener;
+    // 新增：保存 Options 对象
+    private final Options options;
 
     public Device(Options options) {
+        // 新增：赋值
+        this.options = options;
         screenInfo = computeScreenInfo(options.getMaxSize());
         registerRotationWatcher(new IRotationWatcher.Stub() {
             @Override
@@ -29,6 +33,11 @@ public final class Device {
                 }
             }
         });
+    }
+
+    // 新增：Getter 方法，供 ScreenEncoder 调用
+    public Options getOptions() {
+        return options;
     }
 
     public static String getDeviceName() {
