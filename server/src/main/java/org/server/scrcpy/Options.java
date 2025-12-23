@@ -4,6 +4,7 @@ public class Options {
     private int maxSize;
     private int bitRate;
     private boolean tunnelForward;
+    private String encoderName; // 新增：编码器名称
 
     public int getMaxSize() {
         return maxSize;
@@ -27,5 +28,15 @@ public class Options {
 
     public void setTunnelForward(boolean tunnelForward) {
         this.tunnelForward = tunnelForward;
+    }
+
+    // 新增 Getter
+    public String getEncoderName() {
+        return encoderName;
+    }
+
+    // 新增 Setter
+    public void setEncoderName(String encoderName) {
+        this.encoderName = encoderName;
     }
 }
