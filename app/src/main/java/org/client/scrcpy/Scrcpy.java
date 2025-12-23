@@ -152,47 +152,32 @@ public class Scrcpy extends Service {
             realW = realH * remoteW / remoteH;
         }
 
-        // --- 多点触控修改开始 ---
-        int actionMasked = touch_event.getActionMasked();
         int actionIndex = touch_event.getActionIndex();
+        int pointerId = touch_event.getPointerId(actionIndex);
+        int pointCount = touch_event.getPointerCount();
+        // Log.e("Scrcpy", "pointer id: " + pointerId + " , action: " + touch_event.getAction() + " ,point count: " + pointCount + " x: " + touch_event.getX() + " y: " + touch_event.getY());
 
-        switch (actionMasked) {
+        switch (touch_event.getAction()) {
             case MotionEvent.ACTION_MOVE: // 所有手指移动
-                // 遍历所有触摸点，使用 pointerId 来区分手指
+                // 遍历所有触摸点，使用 pointerId 和 pointerIndex 来获取所有触摸点的信息
                 for (int i = 0; i < touch_event.getPointerCount(); i++) {
-                    int pointerId = touch_event.getPointerId(i);
+                    int currentPointerId = touch_event.getPointerId(i);
                     int x = (int) touch_event.getX(i);
                     int y = (int) touch_event.getY(i);
-                    // 发送纯净的 ACTION_MOVE 和对应的 pointerId
-                    sendTouchEvent(MotionEvent.ACTION_MOVE, touch_event.getButtonState(), 
-                            (int) (x * realW / displayW), (int) (y * realH / displayH), pointerId);
+                    // 处理每一个触摸点的x, y坐标
+                    // Log.e("Scrcpy", "触摸移动，index : " + i + " ,x : " + x + " , y: " + y + " ,currentPointerId: " + currentPointerId);
+                    sendTouchEvent(touch_event.getAction(), touch_event.getButtonState(), (int) (x * realW / displayW), (int) (y * realH / displayH), currentPointerId);
                 }
                 break;
-
-            case MotionEvent.ACTION_DOWN:          // 第一个手指按下
-            case MotionEvent.ACTION_UP:            // 最后一个手指抬起
-            case MotionEvent.ACTION_POINTER_DOWN:  // 其他手指按下
-            case MotionEvent.ACTION_POINTER_UP:    // 其他手指抬起
-                // 获取发生变化的那根手指的 ID 和坐标
-                int pointerId = touch_event.getPointerId(actionIndex);
-                int x = (int) touch_event.getX(actionIndex);
-                int y = (int) touch_event.getY(actionIndex);
-                
-                // 发送纯净的 Action (例如 5 或 6) 给服务端
-                sendTouchEvent(actionMasked, touch_event.getButtonState(), 
-                        (int) (x * realW / displayW), (int) (y * realH / displayH), pointerId);
-                break;
-
+            case MotionEvent.ACTION_POINTER_UP: // 中间手指抬起
+            case MotionEvent.ACTION_UP: // 最后一个手指抬起
+            case MotionEvent.ACTION_DOWN: // 第一个手指按下
+            case MotionEvent.ACTION_POINTER_DOWN: // 中间的手指按下
             default:
-                // 处理 Cancel 等其他事件
-                int defaultId = touch_event.getPointerId(actionIndex);
-                sendTouchEvent(actionMasked, touch_event.getButtonState(), 
-                        (int) (touch_event.getX(actionIndex) * realW / displayW), 
-                        (int) (touch_event.getY(actionIndex) * realH / displayH), defaultId);
+                sendTouchEvent(touch_event.getAction(), touch_event.getButtonState(), (int) (touch_event.getX() * realW / displayW), (int) (touch_event.getY() * realH / displayH), pointerId);
                 break;
+
         }
-        // --- 多点触控修改结束 ---
-        
         return true;
     }
 
@@ -398,29 +383,41 @@ public class Scrcpy extends Service {
                     dataInputStream.readFully(packet, 0, size);
                     if (MediaPacket.Type.getType(packet[0]) == MediaPacket.Type.VIDEO) {
                         VideoPacket videoPacket = VideoPacket.readHead(packet);
-                        // byte[] data = videoPacket.data;
-                        if (videoPacket.flag == VideoPacket.Flag.CONFIG || updateAvailable.get()) {
-                            if (!updateAvailable.get()) {
-                                int dataLength = packet.length - VideoPacket.getHeadLen();
-                                byte[] data = new byte[dataLength];
-                                System.arraycopy(packet, VideoPacket.getHeadLen(), data, 0, dataLength);
-                                streamSettings = VideoPacket.getStreamSettings(data);
-                                if (!first_time) {
-                                    if (serviceCallbacks != null) {
-                                        serviceCallbacks.loadNewRotation();
-                                    }
-                                    while (!updateAvailable.get()) {
-                                        // Waiting for new surface
-                                        try {
-                                            Thread.sleep(100);
-                                        } catch (InterruptedException e) {
-                                            e.printStackTrace();
-                                        }
-                                    }
-
-                                }
-                            }
+                        
+                        // --- 修复开始 ---
+                        // 1. 优先检查并处理 Surface 更新 (切后台回来)
+                        if (updateAvailable.get()) {
                             updateAvailable.set(false);
+                            // 如果之前已经保存过配置信息，立即重新配置解码器
+                            if (streamSettings != null) {
+                                Log.i("Scrcpy", "Updating decoder surface from saved settings");
+                                videoDecoder.configure(surface, screenWidth, screenHeight, streamSettings.sps, streamSettings.pps);
+                            }
+                        }
+
+                        // 2. 无论是否更新了 Surface，都要处理当前收到的数据包！
+                        if (videoPacket.flag == VideoPacket.Flag.CONFIG) {
+                            int dataLength = packet.length - VideoPacket.getHeadLen();
+                            byte[] data = new byte[dataLength];
+                            System.arraycopy(packet, VideoPacket.getHeadLen(), data, 0, dataLength);
+                            streamSettings = VideoPacket.getStreamSettings(data);
+                            
+                            // 这是一个配置包 (比如屏幕旋转)，正常处理逻辑
+                            if (!first_time) {
+                                if (serviceCallbacks != null) {
+                                    serviceCallbacks.loadNewRotation();
+                                }
+                                while (!updateAvailable.get()) {
+                                    // Waiting for new surface
+                                    try {
+                                        Thread.sleep(100);
+                                    } catch (InterruptedException e) {
+                                        e.printStackTrace();
+                                    }
+                                }
+                                updateAvailable.set(false); // 消费掉这个标志
+                            }
+                            
                             if (streamSettings != null) {
                                 videoDecoder.configure(surface, screenWidth, screenHeight, streamSettings.sps, streamSettings.pps);
                             }
@@ -428,6 +425,8 @@ public class Scrcpy extends Service {
                             // need close stream
                             Log.e("Scrcpy", "END ... ");
                         } else {
+                            // 3. 这是普通的视频帧，必须解码显示！(修复前如果 updateAvailable 为真，这里会被跳过)
+                            
                             // Log.e("Scrcpy", "videoPacket presentationTimeStamp ... " + videoPacket.presentationTimeStamp);
                             // 帧在 100 ms 以内
                             if (lastVideoOffset == 0) {
@@ -446,6 +445,8 @@ public class Scrcpy extends Service {
                                 }
                             }
                         }
+                        // --- 修复结束 ---
+                        
                         first_time = false;
                     } else if (MediaPacket.Type.getType(packet[0]) == MediaPacket.Type.AUDIO) {
                         AudioPacket audioPacket = AudioPacket.readHead(packet);
