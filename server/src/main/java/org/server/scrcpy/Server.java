@@ -76,6 +76,16 @@ public final class Server {
         // use "adb forward" instead of "adb tunnel"? (so the server must listen)
         boolean tunnelForward = Boolean.parseBoolean(args[3]);
         options.setTunnelForward(tunnelForward);
+
+        // 新增：读取第 5 个参数 encoderName
+        if (args.length >= 5) {
+            String encoderName = args[4];
+            // 客户端传递 "-" 代表默认
+            if (encoderName != null && !encoderName.equals("-")) {
+                options.setEncoderName(encoderName);
+            }
+        }
+
         return options;
     }
 
@@ -100,4 +110,3 @@ public final class Server {
         scrcpy(options);
     }
 }
-
