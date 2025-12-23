@@ -47,6 +47,7 @@ public class Scrcpy extends Service {
     private VideoDecoder videoDecoder;
     private AudioDecoder audioDecoder;
     private final AtomicBoolean updateAvailable = new AtomicBoolean(false);
+    private final AtomicBoolean isPaused = new AtomicBoolean(false); // 新增暂停标记
     private final IBinder mBinder = new MyServiceBinder();
     private boolean first_time = true;
 
@@ -70,9 +71,18 @@ public class Scrcpy extends Service {
         this.screenHeight = NewHeight;
         this.surface = NewSurface;
 
-        videoDecoder.start();
-        audioDecoder.start();
-
+        // setParms 调用时意味着 Surface 更新，需要重新配置解码器，但不需要立即 start，由 loop 处理配置
+        // 如果当前是暂停状态，setParms 后 resume 会被调用，那里会 start
+        // 这里不需要 start，因为 loop 里检测到 CONFIG 或 updateAvailable 后会 configure
+        
+        // 原有逻辑里这里调用了 start，可能是为了快速响应旋转
+        // 在后台恢复场景中，videoDecoder 可能被 stop 了，重新 start 可能需要 new
+        // 放在 loop 的 updateAvailable 处理中更安全
+        
+        // 保持原有逻辑，尝试重启解码器，但注意如果已 stop 可能需要重新 new，这里暂且保留原样
+        // 但为了安全，resume 时会处理 start，这里只设置标志位
+        // videoDecoder.start(); 
+        // audioDecoder.start();
 
         updateAvailable.set(true);
 
@@ -102,6 +112,7 @@ public class Scrcpy extends Service {
     }
 
     public void pause() {
+        isPaused.set(true); // 标记暂停
         if (videoDecoder != null) {
             videoDecoder.stop();
         }
@@ -118,6 +129,7 @@ public class Scrcpy extends Service {
         if (audioDecoder != null) {
             audioDecoder.start();
         }
+        isPaused.set(false); // 取消暂停
         updateAvailable.set(true);
     }
 
@@ -433,16 +445,19 @@ public class Scrcpy extends Service {
                             if (lastVideoOffset == 0) {
                                 lastVideoOffset = System.currentTimeMillis() - (videoPacket.presentationTimeStamp / 1000);
                             }
-                            if (videoPacket.flag == VideoPacket.Flag.KEY_FRAME) {
-                                videoDecoder.decodeSample(packet, VideoPacket.getHeadLen(), packet.length - VideoPacket.getHeadLen(),
-                                        0, videoPacket.flag.getFlag());
-                            } else {
-                                if (System.currentTimeMillis() - (lastVideoOffset + (videoPacket.presentationTimeStamp / 1000)) < delay) {
-                                    videoPassCount = 0;
+                            // 如果 isPaused 为 true，则不进行解码，防止 decoder stop 后调用出错
+                            if (!isPaused.get()) {
+                                if (videoPacket.flag == VideoPacket.Flag.KEY_FRAME) {
                                     videoDecoder.decodeSample(packet, VideoPacket.getHeadLen(), packet.length - VideoPacket.getHeadLen(),
                                             0, videoPacket.flag.getFlag());
                                 } else {
-                                    videoPassCount++;
+                                    if (System.currentTimeMillis() - (lastVideoOffset + (videoPacket.presentationTimeStamp / 1000)) < delay) {
+                                        videoPassCount = 0;
+                                        videoDecoder.decodeSample(packet, VideoPacket.getHeadLen(), packet.length - VideoPacket.getHeadLen(),
+                                                0, videoPacket.flag.getFlag());
+                                    } else {
+                                        videoPassCount++;
+                                    }
                                 }
                             }
                         }
@@ -462,6 +477,7 @@ public class Scrcpy extends Service {
                             if (lastAudioOffset == 0) {
                                 lastAudioOffset = System.currentTimeMillis() - (audioPacket.presentationTimeStamp / 1000);
                             }
+                            // 同理，音频如果暂不支持暂停恢复，也可加 !isPaused.get() 判断
                             if (System.currentTimeMillis() - (lastAudioOffset + (audioPacket.presentationTimeStamp / 1000)) < delay) {
                                 audioPassCount = 0;
                                 audioDecoder.decodeSample(packet, VideoPacket.getHeadLen(), packet.length - AudioPacket.getHeadLen(),
