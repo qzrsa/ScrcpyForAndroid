@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# 必须添加这个权限，否则无法上传 Release
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,19 +27,49 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
-    # --- 新增步骤：编译 Server 并复制到 assets ---
+    # 1. 编译 Server (核心步骤)
     - name: Build Server and Copy to Assets
       run: ./gradlew :server:copyServer
 
-    # --- 修改步骤：编译 Debug 版 APK (无需签名密钥) ---
+    # 2. 编译 Debug 版 APK
     - name: Build with Gradle
       run: ./gradlew assembleDebug
 
-    # --- 修改步骤：上传 Debug APK ---
-    - name: Upload Debug APK
-      uses: actions/upload-artifact@v4
+    # 3. 提取版本号 (从 app/build.gradle 读取 versionName)
+    - name: Extract Version Name
+      id: extract_version
+      run: |
+        VERSION_NAME=$(grep "versionName" app/build.gradle | awk '{print $2}' | tr -d '"' | tr -d "'")
+        echo "Detected Version: $VERSION_NAME"
+        echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_ENV
+
+    # 4. 重命名 APK
+    - name: Rename APK
+      run: |
+        # 找到生成的 debug apk (路径根据 flavor 可能会有变化，这里使用通配符确保找到)
+        APK_PATH=$(find app/build/outputs/apk -name "*.apk" | head -n 1)
+        
+        # 定义新名字
+        NEW_NAME="scrcpy-QZRS-${{ env.VERSION_NAME }}.apk"
+        
+        # 重命名并移动到当前目录
+        mv "$APK_PATH" "$NEW_NAME"
+        
+        echo "APK renamed to: $NEW_NAME"
+        echo "APK_FILENAME=$NEW_NAME" >> $GITHUB_ENV
+
+    # 5. 发布到 Releases (自动更新 Latest Build)
+    - name: Upload to Release
+      uses: softprops/action-gh-release@v1
       with:
-        name: ScrcpyForAndroid-debug
-        path: |
-          app/build/outputs/apk/*/debug/*.apk
-        retention-days: 90
+        tag_name: latest      # 固定标签名，每次都覆盖这个 tag
+        name: Latest Build    # Release 的标题
+        body: |
+          🚀 自动构建版本: ${{ env.VERSION_NAME }}
+          📅 构建时间: ${{ steps.date.outputs.date }}
+          sha: ${{ github.sha }}
+        files: ${{ env.APK_FILENAME }}  # 上传重命名后的 APK
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 自动生成的 Token，无需配置
