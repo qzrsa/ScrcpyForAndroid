@@ -86,7 +86,8 @@ public class ScrcpyHost implements Scrcpy.ServiceCallbacks {
                     connectCallBack.onConnect(Math.min(remote_device_width, remote_device_height), Math.max(remote_device_width, remote_device_height));
                 }
             } else {
-                scrcpy.setParms(surface, screenWidth, screenHeight);
+                // 修改此处：适配新的 API，将 setNewSurface 替换 setParms
+                scrcpy.setNewSurface(surface);
             }
         }
 
