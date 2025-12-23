@@ -654,10 +654,11 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
         super.onPause();
         if (serviceBound) {
             scrcpy.pause();
-            resumeScrcpy = true;
+            // 不再断开连接
+            // resumeScrcpy = true;
             // 返回到主页面，属于用户主动断开场景
-            showMainView(true);
-            first_time = true;
+            // showMainView(true);
+            // first_time = true;
         }
     }
 
@@ -676,6 +677,10 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
             if (serviceBound) {
                 // 黑屏无需修复， 因为只是自带的配置问题
                 linearLayout = findViewById(R.id.container1);
+                // 更新 Surface，因为后台切回来原来的 Surface 已经销毁了
+                if (surfaceView != null) {
+                    scrcpy.setParms(surfaceView.getHolder().getSurface(), screenWidth, screenHeight);
+                }
                 scrcpy.resume();
             }
         }
