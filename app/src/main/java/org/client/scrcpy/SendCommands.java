@@ -1,6 +1,5 @@
 package org.client.scrcpy;
 
-
 import android.content.Context;
 import android.text.TextUtils;
 import android.util.Log;
@@ -27,13 +26,17 @@ public class SendCommands {
 
     }
 
-    public int SendAdbCommands(Context context, final String ip, int port, int forwardport, String localip, int bitrate, int size) {
-        return this.SendAdbCommands(context, null, ip, port, forwardport, localip, bitrate, size);
+    // 修改：增加 encoderName 参数
+    public int SendAdbCommands(Context context, final String ip, int port, int forwardport, String localip, int bitrate, int size, String encoderName) {
+        return this.SendAdbCommands(context, null, ip, port, forwardport, localip, bitrate, size, encoderName);
     }
 
-    public int SendAdbCommands(Context context, final byte[] fileBase64, final String ip, int port, int forwardport, String localip, int bitrate, int size) {
+    // 修改：增加 encoderName 参数
+    public int SendAdbCommands(Context context, final byte[] fileBase64, final String ip, int port, int forwardport, String localip, int bitrate, int size, String encoderName) {
         this.context = context;
         status = 1;
+        
+        // 构造新的命令数组，传递 encoderName
         String[] commands = new String[]{
                 "-s", ip + ":" + port,
                 "shell",
@@ -41,10 +44,13 @@ public class SendCommands {
                 "app_process",
                 "/",
                 "org.server.scrcpy.Server",
-                "/" + localip,
-                Long.toString(size),
-                Long.toString(bitrate) + ";"
+                "/" + localip,                // Arg 0: ip
+                Long.toString(size),          // Arg 1: maxSize
+                Long.toString(bitrate),       // Arg 2: bitRate
+                "false",                      // Arg 3: tunnelForward (补全缺省参数)
+                encoderName + ";"             // Arg 4: encoderName (注意结尾的分号)
         };
+        
         ThreadUtils.execute(() -> {
             try {
                 // 新版的复制方式
