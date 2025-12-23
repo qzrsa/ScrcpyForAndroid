@@ -8,11 +8,11 @@ on:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
+    
     - name: set up JDK 17
       uses: actions/setup-java@v4
       with:
@@ -20,25 +20,22 @@ jobs:
         distribution: 'temurin'
         cache: gradle
 
-    - name: Decode Keystore
-      env:
-        ENCODED_STRING: ${{ secrets.SIGNING_KEY }}  # Uses the encoded signing key stored in GitHub Secrets.
-      run: |
-        echo $ENCODED_STRING | base64 -di > app/scrcpy.jks
-
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
-    - name: Build with Gradle
-      run: ./gradlew assembleScrcpyRelease
-      env:
-        SIGNING_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
-        SIGNING_KEY_ALIAS: ${{ secrets.ALIAS }}
-        SIGNING_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
-    - name: Upload Signed Release APK
+    # --- 新增步骤：编译 Server 并复制到 assets ---
+    - name: Build Server and Copy to Assets
+      run: ./gradlew :server:copyServer
+
+    # --- 修改步骤：编译 Debug 版 APK (无需签名密钥) ---
+    - name: Build with Gradle
+      run: ./gradlew assembleDebug
+
+    # --- 修改步骤：上传 Debug APK ---
+    - name: Upload Debug APK
       uses: actions/upload-artifact@v4
       with:
-        name: ScrcpyForAndroid-signed-release
+        name: ScrcpyForAndroid-debug
         path: |
-          app/build/outputs/apk/scrcpy/release/*.apk
-        retention-days: 90  # Sets the artifact retention period to 90 days.
+          app/build/outputs/apk/*/debug/*.apk
+        retention-days: 90
