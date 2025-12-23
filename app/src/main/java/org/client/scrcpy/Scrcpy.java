@@ -152,32 +152,47 @@ public class Scrcpy extends Service {
             realW = realH * remoteW / remoteH;
         }
 
+        // --- 多点触控修改开始 ---
+        int actionMasked = touch_event.getActionMasked();
         int actionIndex = touch_event.getActionIndex();
-        int pointerId = touch_event.getPointerId(actionIndex);
-        int pointCount = touch_event.getPointerCount();
-        // Log.e("Scrcpy", "pointer id: " + pointerId + " , action: " + touch_event.getAction() + " ,point count: " + pointCount + " x: " + touch_event.getX() + " y: " + touch_event.getY());
 
-        switch (touch_event.getAction()) {
+        switch (actionMasked) {
             case MotionEvent.ACTION_MOVE: // 所有手指移动
-                // 遍历所有触摸点，使用 pointerId 和 pointerIndex 来获取所有触摸点的信息
+                // 遍历所有触摸点，使用 pointerId 来区分手指
                 for (int i = 0; i < touch_event.getPointerCount(); i++) {
-                    int currentPointerId = touch_event.getPointerId(i);
+                    int pointerId = touch_event.getPointerId(i);
                     int x = (int) touch_event.getX(i);
                     int y = (int) touch_event.getY(i);
-                    // 处理每一个触摸点的x, y坐标
-                    // Log.e("Scrcpy", "触摸移动，index : " + i + " ,x : " + x + " , y: " + y + " ,currentPointerId: " + currentPointerId);
-                    sendTouchEvent(touch_event.getAction(), touch_event.getButtonState(), (int) (x * realW / displayW), (int) (y * realH / displayH), currentPointerId);
+                    // 发送纯净的 ACTION_MOVE 和对应的 pointerId
+                    sendTouchEvent(MotionEvent.ACTION_MOVE, touch_event.getButtonState(), 
+                            (int) (x * realW / displayW), (int) (y * realH / displayH), pointerId);
                 }
                 break;
-            case MotionEvent.ACTION_POINTER_UP: // 中间手指抬起
-            case MotionEvent.ACTION_UP: // 最后一个手指抬起
-            case MotionEvent.ACTION_DOWN: // 第一个手指按下
-            case MotionEvent.ACTION_POINTER_DOWN: // 中间的手指按下
-            default:
-                sendTouchEvent(touch_event.getAction(), touch_event.getButtonState(), (int) (touch_event.getX() * realW / displayW), (int) (touch_event.getY() * realH / displayH), pointerId);
+
+            case MotionEvent.ACTION_DOWN:          // 第一个手指按下
+            case MotionEvent.ACTION_UP:            // 最后一个手指抬起
+            case MotionEvent.ACTION_POINTER_DOWN:  // 其他手指按下
+            case MotionEvent.ACTION_POINTER_UP:    // 其他手指抬起
+                // 获取发生变化的那根手指的 ID 和坐标
+                int pointerId = touch_event.getPointerId(actionIndex);
+                int x = (int) touch_event.getX(actionIndex);
+                int y = (int) touch_event.getY(actionIndex);
+                
+                // 发送纯净的 Action (例如 5 或 6) 给服务端
+                sendTouchEvent(actionMasked, touch_event.getButtonState(), 
+                        (int) (x * realW / displayW), (int) (y * realH / displayH), pointerId);
                 break;
 
+            default:
+                // 处理 Cancel 等其他事件
+                int defaultId = touch_event.getPointerId(actionIndex);
+                sendTouchEvent(actionMasked, touch_event.getButtonState(), 
+                        (int) (touch_event.getX(actionIndex) * realW / displayW), 
+                        (int) (touch_event.getY(actionIndex) * realH / displayH), defaultId);
+                break;
         }
+        // --- 多点触控修改结束 ---
+        
         return true;
     }
 
