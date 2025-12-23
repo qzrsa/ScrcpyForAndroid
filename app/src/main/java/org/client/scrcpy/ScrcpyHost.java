@@ -151,12 +151,11 @@ public class ScrcpyHost implements Scrcpy.ServiceCallbacks {
             } else {
                 serverHost = serverAdr;
             }
-            // 修改处：增加了最后一个参数 "-" (代表默认编码器)
             if (sendCommands.SendAdbCommands(context, fileBase64, serverHost,
                     serverPort,
                     localForwardPort,
                     Scrcpy.LOCAL_IP,
-                    videoBitrate, Math.max(screenHeight, screenWidth), "-") == 0) {
+                    videoBitrate, Math.max(screenHeight, screenWidth)) == 0) {
                 start_screen_copy_magic();
             } else {
                 Toast.makeText(context, "Network OR ADB connection failed", Toast.LENGTH_SHORT).show();

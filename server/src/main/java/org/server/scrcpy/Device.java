@@ -10,19 +10,18 @@ import org.server.scrcpy.wrappers.ServiceManager;
 
 public final class Device {
 
+    // private final ServiceManager serviceManager = new ServiceManager();
     private ScreenInfo screenInfo;
     private RotationListener rotationListener;
-    // 1. 新增：保存 Options 对象 (用于编码器选择)
-    private final Options options;
 
     public Device(Options options) {
-        this.options = options;
         screenInfo = computeScreenInfo(options.getMaxSize());
         registerRotationWatcher(new IRotationWatcher.Stub() {
             @Override
             public void onRotationChanged(int rotation) throws RemoteException {
                 synchronized (Device.this) {
                     screenInfo = screenInfo.withRotation(rotation);
+
                     // notify
                     if (rotationListener != null) {
                         rotationListener.onRotationChanged(rotation);
@@ -30,11 +29,6 @@ public final class Device {
                 }
             }
         });
-    }
-
-    // 2. 新增：Getter 方法
-    public Options getOptions() {
-        return options;
     }
 
     public static String getDeviceName() {
@@ -47,6 +41,11 @@ public final class Device {
 
     @SuppressWarnings("checkstyle:MagicNumber")
     private ScreenInfo computeScreenInfo(int maxSize) {
+        // Compute the video size and the padding of the content inside this video.
+        // Principle:
+        // - scale down the great side of the screen to maxSize (if necessary);
+        // - scale down the other side so that the aspect ratio is preserved;
+        // - round this value to the nearest multiple of 8 (H.264 only accepts multiples of 8)
         DisplayInfo displayInfo = ServiceManager.getDisplayManager().getDisplayInfo();
         boolean rotated = (displayInfo.getRotation() & 1) != 0;
         Size deviceSize = displayInfo.getSize();
@@ -74,25 +73,16 @@ public final class Device {
 
     public Point getPhysicalPoint(Position position) {
         @SuppressWarnings("checkstyle:HiddenField") // it hides the field on purpose, to read it with a lock
-        ScreenInfo screenInfo = getScreenInfo(); // read with synchronization
+                ScreenInfo screenInfo = getScreenInfo(); // read with synchronization
         Size videoSize = screenInfo.getVideoSize();
         Size clientVideoSize = position.getScreenSize();
         if (!videoSize.equals(clientVideoSize)) {
+            // The client sends a click relative to a video with wrong dimensions,
+            // the device may have been rotated since the event was generated, so ignore the event
             return null;
         }
         Size deviceSize = screenInfo.getDeviceSize();
         Point point = position.getPoint();
-        int scaledX = point.getX() * deviceSize.getWidth() / videoSize.getWidth();
-        int scaledY = point.getY() * deviceSize.getHeight() / videoSize.getHeight();
-        return new Point(scaledX, scaledY);
-    }
-
-    // 3. 补回：缺失的自定义方法，解决编译报错
-    public Point NewgetPhysicalPoint(Point point) {
-        @SuppressWarnings("checkstyle:HiddenField")
-        ScreenInfo screenInfo = getScreenInfo();
-        Size videoSize = screenInfo.getVideoSize();
-        Size deviceSize = screenInfo.getDeviceSize();
         int scaledX = point.getX() * deviceSize.getWidth() / videoSize.getWidth();
         int scaledY = point.getY() * deviceSize.getHeight() / videoSize.getHeight();
         return new Point(scaledX, scaledY);
@@ -114,7 +104,22 @@ public final class Device {
         this.rotationListener = rotationListener;
     }
 
+    public Point NewgetPhysicalPoint(Point point) {
+        @SuppressWarnings("checkstyle:HiddenField") // it hides the field on purpose, to read it with a lock
+                ScreenInfo screenInfo = getScreenInfo(); // read with synchronization
+        Size videoSize = screenInfo.getVideoSize();
+//        Size clientVideoSize = position.getScreenSize();
+
+        Size deviceSize = screenInfo.getDeviceSize();
+//        Point point = position.getPoint();
+        int scaledX = point.getX() * deviceSize.getWidth() / videoSize.getWidth();
+        int scaledY = point.getY() * deviceSize.getHeight() / videoSize.getHeight();
+        return new Point(scaledX, scaledY);
+    }
+
+
     public interface RotationListener {
         void onRotationChanged(int rotation);
     }
+
 }

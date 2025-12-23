@@ -4,6 +4,7 @@ import android.app.Service;
 import android.content.Intent;
 import android.os.Binder;
 import android.os.IBinder;
+import android.text.TextUtils;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.Surface;
@@ -19,6 +20,8 @@ import org.client.scrcpy.utils.Util;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.LinkedList;
@@ -29,9 +32,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class Scrcpy extends Service {
 
     public static final String LOCAL_IP = "127.0.0.1";
+    // 本地画面转发占用的端口
     public static final int LOCAL_FORWART_PORT = 7008;
+
     public static final int DEFAULT_ADB_PORT = 5555;
-    
     private String serverHost;
     private int serverPort = DEFAULT_ADB_PORT;
     private Surface surface;
@@ -39,6 +43,7 @@ public class Scrcpy extends Service {
     private int screenHeight;
 
     private final Queue<byte[]> event = new LinkedList<byte[]>();
+    // private byte[] event = null;
     private VideoDecoder videoDecoder;
     private AudioDecoder audioDecoder;
     private final AtomicBoolean updateAvailable = new AtomicBoolean(false);
@@ -60,25 +65,17 @@ public class Scrcpy extends Service {
         serviceCallbacks = callbacks;
     }
 
-    // 当 Activity 回到前台，Surface 重建时调用此方法
     public void setParms(Surface NewSurface, int NewWidth, int NewHeight) {
         this.screenWidth = NewWidth;
         this.screenHeight = NewHeight;
         this.surface = NewSurface;
 
-        if (videoDecoder != null) {
-            // 关键：热切换 Surface，不停止解码
-            videoDecoder.updateSurface(NewSurface);
-            videoDecoder.setRender(true);
-        }
-        
-        // 音频无需热切换，继续播放即可
-        if (audioDecoder != null) {
-            audioDecoder.start();
-        }
-        
-        // 触发一次 update 标志，确保配置同步
+        videoDecoder.start();
+        audioDecoder.start();
+
+
         updateAvailable.set(true);
+
     }
 
     public void start(Surface surface, String serverAdr, int screenHeight, int screenWidth, int delay) {
@@ -105,26 +102,23 @@ public class Scrcpy extends Service {
     }
 
     public void pause() {
-        // 关键：切换到后台时，不停止解码器，只停止渲染到屏幕
-        // 这样可以保持解码上下文（参考帧），防止切回来黑屏
         if (videoDecoder != null) {
-            videoDecoder.setRender(false);
+            videoDecoder.stop();
         }
-        
-        // 音频可以选择暂停或继续，这里选择暂停以省电
+
         if (audioDecoder != null) {
             audioDecoder.stop();
         }
     }
 
     public void resume() {
-        // 切回前台，恢复渲染
         if (videoDecoder != null) {
-            videoDecoder.setRender(true);
+            videoDecoder.start();
         }
         if (audioDecoder != null) {
             audioDecoder.start();
         }
+        updateAvailable.set(true);
     }
 
     public void StopService() {
@@ -145,7 +139,7 @@ public class Scrcpy extends Service {
         float realH;
         float realW;
 
-        if (landscape) { 
+        if (landscape) {  // 横屏的话，宽高相反
             remoteW = Math.max(remote_dev_resolution[0], remote_dev_resolution[1]);
             remoteH = Math.min(remote_dev_resolution[0], remote_dev_resolution[1]);
 
@@ -158,33 +152,55 @@ public class Scrcpy extends Service {
             realW = realH * remoteW / remoteH;
         }
 
+        // --- 多点触控修改开始 ---
+        int actionMasked = touch_event.getActionMasked();
         int actionIndex = touch_event.getActionIndex();
-        int pointerId = touch_event.getPointerId(actionIndex);
-        
-        switch (touch_event.getAction()) {
-            case MotionEvent.ACTION_MOVE: 
+
+        switch (actionMasked) {
+            case MotionEvent.ACTION_MOVE: // 所有手指移动
+                // 遍历所有触摸点，使用 pointerId 来区分手指
                 for (int i = 0; i < touch_event.getPointerCount(); i++) {
-                    int currentPointerId = touch_event.getPointerId(i);
+                    int pointerId = touch_event.getPointerId(i);
                     int x = (int) touch_event.getX(i);
                     int y = (int) touch_event.getY(i);
-                    sendTouchEvent(touch_event.getAction(), touch_event.getButtonState(), (int) (x * realW / displayW), (int) (y * realH / displayH), currentPointerId);
+                    // 发送纯净的 ACTION_MOVE 和对应的 pointerId
+                    sendTouchEvent(MotionEvent.ACTION_MOVE, touch_event.getButtonState(), 
+                            (int) (x * realW / displayW), (int) (y * realH / displayH), pointerId);
                 }
                 break;
-            case MotionEvent.ACTION_POINTER_UP: 
-            case MotionEvent.ACTION_UP: 
-            case MotionEvent.ACTION_DOWN: 
-            case MotionEvent.ACTION_POINTER_DOWN: 
-            default:
-                sendTouchEvent(touch_event.getAction(), touch_event.getButtonState(), (int) (touch_event.getX() * realW / displayW), (int) (touch_event.getY() * realH / displayH), pointerId);
+
+            case MotionEvent.ACTION_DOWN:          // 第一个手指按下
+            case MotionEvent.ACTION_UP:            // 最后一个手指抬起
+            case MotionEvent.ACTION_POINTER_DOWN:  // 其他手指按下
+            case MotionEvent.ACTION_POINTER_UP:    // 其他手指抬起
+                // 获取发生变化的那根手指的 ID 和坐标
+                int pointerId = touch_event.getPointerId(actionIndex);
+                int x = (int) touch_event.getX(actionIndex);
+                int y = (int) touch_event.getY(actionIndex);
+                
+                // 发送纯净的 Action (例如 5 或 6) 给服务端
+                sendTouchEvent(actionMasked, touch_event.getButtonState(), 
+                        (int) (x * realW / displayW), (int) (y * realH / displayH), pointerId);
                 break;
 
+            default:
+                // 处理 Cancel 等其他事件
+                int defaultId = touch_event.getPointerId(actionIndex);
+                sendTouchEvent(actionMasked, touch_event.getButtonState(), 
+                        (int) (touch_event.getX(actionIndex) * realW / displayW), 
+                        (int) (touch_event.getY(actionIndex) * realH / displayH), defaultId);
+                break;
         }
+        // --- 多点触控修改结束 ---
+        
         return true;
     }
 
     private void sendTouchEvent(int action, int buttonState, int x, int y, int pointerId){
+        // 为支持多点触控，将 pointid 添加到最末尾
+        // TODO : 后续需要改造 event 传输方式
         int[] buf = new int[]{action, buttonState, x, y, pointerId};
-        final byte[] array = new byte[buf.length * 4]; 
+        final byte[] array = new byte[buf.length * 4]; // https://stackoverflow.com/questions/2183240/java-integer-to-byte-array
         for (int j = 0; j < buf.length; j++) {
             final int c = buf[j];
             array[j * 4] = (byte) ((c & 0xFF000000) >> 24);
@@ -195,6 +211,7 @@ public class Scrcpy extends Service {
         if (LetServceRunning.get()) {
             event.offer(array);
         }
+        // event = array;
     }
 
     public int[] get_remote_device_resolution() {
@@ -207,7 +224,8 @@ public class Scrcpy extends Service {
 
     public void sendKeyevent(int keycode) {
         int[] buf = new int[]{keycode};
-        final byte[] array = new byte[buf.length * 4]; 
+
+        final byte[] array = new byte[buf.length * 4];   // https://stackoverflow.com/questions/2183240/java-integer-to-byte-array
         for (int j = 0; j < buf.length; j++) {
             final int c = buf[j];
             array[j * 4] = (byte) ((c & 0xFF000000) >> 24);
@@ -217,10 +235,12 @@ public class Scrcpy extends Service {
         }
         if (LetServceRunning.get()) {
             event.offer(array);
+            // event = array;
         }
     }
 
     private void startConnection(String ip, int port, int delay) {
+
         videoDecoder = new VideoDecoder();
         videoDecoder.start();
         audioDecoder = new AudioDecoder();
@@ -231,18 +251,23 @@ public class Scrcpy extends Service {
         Socket socket = null;
         boolean firstConnect = true;
         int attempts = 50;
-        
         while (attempts > 0) {
             try {
                 Log.e("Scrcpy", "Connecting to " + LOCAL_IP);
+                // socket = new Socket(ip, port);
                 socket = new Socket();
-                socket.connect(new InetSocketAddress(ip, port), 5000); 
+                socket.connect(new InetSocketAddress(ip, port), 5000); //设置超时5000毫秒
                 if (!LetServceRunning.get()) {
                     return;
                 }
 
-                if (firstConnect) { 
+                Log.e("Scrcpy", "Connecting to " + LOCAL_IP + " success");
+
+                // 能够正常进行连接，说明可能建立了 tcp 连接，需要等待数据
+                // 一次等待时间为 2s ，最多等待五次，也就是 10秒
+                if (firstConnect) {  // 此处有 while 循环，不能一直设置为10
                     firstConnect = false;
+                    // waitResolutionCount 为 10，等待100ms 也就是共计一秒钟，设置attempts 为 5，也就是 5秒后则退出
                     attempts = 5;
                 }
                 dataInputStream = new DataInputStream(socket.getInputStream());
@@ -251,11 +276,13 @@ public class Scrcpy extends Service {
                     waitResolutionCount--;
                     try {
                         Thread.sleep(100);
-                    } catch (InterruptedException ignore) {}
+                    } catch (InterruptedException ignore) {
+                    }
                 }
                 if (dataInputStream.available() <= 0) {
-                    throw new IOException("can't read socket Resolution");
+                    throw new IOException("can't read socket Resolution : " + attempts);
                 }
+
 
                 dataOutputStream = new DataOutputStream(socket.getOutputStream());
                 attempts = 0;
@@ -283,6 +310,7 @@ public class Scrcpy extends Service {
                     attempts--;
                     if (attempts < 0) {
                         socket_status = false;
+
                         if (serviceCallbacks != null) {
                             serviceCallbacks.errorDisconnect();
                         }
@@ -290,25 +318,51 @@ public class Scrcpy extends Service {
                     }
                     try {
                         Thread.sleep(100);
-                    } catch (InterruptedException ignore) {}
+                    } catch (InterruptedException ignore) {
+                    }
                 }
+                Log.e("Scrcpy", e.getMessage());
+                Log.e("Scrcpy", "attempts--");
             } finally {
-                if (socket != null) try { socket.close(); } catch (IOException e) {}
-                if (dataOutputStream != null) try { dataOutputStream.close(); } catch (IOException e) {}
-                if (dataInputStream != null) try { dataInputStream.close(); } catch (IOException e) {}
+                if (socket != null) {
+                    try {
+                        socket.close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+                if (dataOutputStream != null) {
+                    try {
+                        dataOutputStream.close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+                if (dataInputStream != null) {
+                    try {
+                        dataInputStream.close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+                // 清除事件队列
                 event.clear();
+
             }
+
         }
+
     }
 
     private void loop(DataInputStream dataInputStream, DataOutputStream dataOutputStream, int delay) throws InterruptedException {
         VideoPacket.StreamSettings streamSettings = null;
         byte[] packetSize = new byte[4];
+
+        // 由于网络传输存在延迟，丢弃数据包计数
         long lastVideoOffset = 0;
         long lastAudioOffset = 0;
-        
-        // 关键：在循环开始前，确保 Render 状态正确
-        if (videoDecoder != null) videoDecoder.setRender(true);
+        int videoPassCount = 0;
+        int audioPassCount = 0;
 
         while (LetServceRunning.get()) {
             boolean waitEvent = true;
@@ -320,8 +374,12 @@ public class Scrcpy extends Service {
                         dataOutputStream.write(sendevent, 0, sendevent.length);
                     } catch (IOException e) {
                         e.printStackTrace();
-                        if (serviceCallbacks != null) serviceCallbacks.errorDisconnect();
+                        if (serviceCallbacks != null) {
+                            serviceCallbacks.errorDisconnect();
+                        }
                         LetServceRunning.set(false);
+                    } finally {
+                        // event = null;
                     }
                 }
 
@@ -329,8 +387,10 @@ public class Scrcpy extends Service {
                     waitEvent = false;
                     dataInputStream.readFully(packetSize, 0, 4);
                     int size = ByteUtils.bytesToInt(packetSize);
-                    if (size > 4 * 1024 * 1024) { 
-                        if (serviceCallbacks != null) serviceCallbacks.errorDisconnect();
+                    if (size > 4 * 1024 * 1024) {  // 如果单个数据包大于 4m ，直接断开连接
+                        if (serviceCallbacks != null) {
+                            serviceCallbacks.errorDisconnect();
+                        }
                         LetServceRunning.set(false);
                         return;
                     }
@@ -338,25 +398,38 @@ public class Scrcpy extends Service {
                     dataInputStream.readFully(packet, 0, size);
                     if (MediaPacket.Type.getType(packet[0]) == MediaPacket.Type.VIDEO) {
                         VideoPacket videoPacket = VideoPacket.readHead(packet);
-                        
-                        if (videoPacket.flag == VideoPacket.Flag.CONFIG) {
-                            int dataLength = packet.length - VideoPacket.getHeadLen();
-                            byte[] data = new byte[dataLength];
-                            System.arraycopy(packet, VideoPacket.getHeadLen(), data, 0, dataLength);
-                            streamSettings = VideoPacket.getStreamSettings(data);
-                            
-                            if (!first_time) {
-                                if (serviceCallbacks != null) serviceCallbacks.loadNewRotation();
-                                // 如果是旋转，可能需要等待Surface，但此时我们支持热切换，所以不必阻塞太久
+                        // byte[] data = videoPacket.data;
+                        if (videoPacket.flag == VideoPacket.Flag.CONFIG || updateAvailable.get()) {
+                            if (!updateAvailable.get()) {
+                                int dataLength = packet.length - VideoPacket.getHeadLen();
+                                byte[] data = new byte[dataLength];
+                                System.arraycopy(packet, VideoPacket.getHeadLen(), data, 0, dataLength);
+                                streamSettings = VideoPacket.getStreamSettings(data);
+                                if (!first_time) {
+                                    if (serviceCallbacks != null) {
+                                        serviceCallbacks.loadNewRotation();
+                                    }
+                                    while (!updateAvailable.get()) {
+                                        // Waiting for new surface
+                                        try {
+                                            Thread.sleep(100);
+                                        } catch (InterruptedException e) {
+                                            e.printStackTrace();
+                                        }
+                                    }
+
+                                }
                             }
-                            
+                            updateAvailable.set(false);
                             if (streamSettings != null) {
                                 videoDecoder.configure(surface, screenWidth, screenHeight, streamSettings.sps, streamSettings.pps);
                             }
                         } else if (videoPacket.flag == VideoPacket.Flag.END) {
+                            // need close stream
                             Log.e("Scrcpy", "END ... ");
                         } else {
-                            // 正常解码视频帧
+                            // Log.e("Scrcpy", "videoPacket presentationTimeStamp ... " + videoPacket.presentationTimeStamp);
+                            // 帧在 100 ms 以内
                             if (lastVideoOffset == 0) {
                                 lastVideoOffset = System.currentTimeMillis() - (videoPacket.presentationTimeStamp / 1000);
                             }
@@ -365,28 +438,36 @@ public class Scrcpy extends Service {
                                         0, videoPacket.flag.getFlag());
                             } else {
                                 if (System.currentTimeMillis() - (lastVideoOffset + (videoPacket.presentationTimeStamp / 1000)) < delay) {
+                                    videoPassCount = 0;
                                     videoDecoder.decodeSample(packet, VideoPacket.getHeadLen(), packet.length - VideoPacket.getHeadLen(),
                                             0, videoPacket.flag.getFlag());
+                                } else {
+                                    videoPassCount++;
                                 }
                             }
                         }
                         first_time = false;
                     } else if (MediaPacket.Type.getType(packet[0]) == MediaPacket.Type.AUDIO) {
                         AudioPacket audioPacket = AudioPacket.readHead(packet);
+                        // byte[] data = audioPacket.data;
                         if (audioPacket.flag == AudioPacket.Flag.CONFIG) {
                             int dataLength = packet.length - AudioPacket.getHeadLen();
                             byte[] data = new byte[dataLength];
                             System.arraycopy(packet, AudioPacket.getHeadLen(), data, 0, dataLength);
                             audioDecoder.configure(data);
                         } else if (audioPacket.flag == AudioPacket.Flag.END) {
+                            // need close stream
                             Log.e("Scrcpy", "Audio END ... ");
                         } else {
                             if (lastAudioOffset == 0) {
                                 lastAudioOffset = System.currentTimeMillis() - (audioPacket.presentationTimeStamp / 1000);
                             }
                             if (System.currentTimeMillis() - (lastAudioOffset + (audioPacket.presentationTimeStamp / 1000)) < delay) {
+                                audioPassCount = 0;
                                 audioDecoder.decodeSample(packet, VideoPacket.getHeadLen(), packet.length - AudioPacket.getHeadLen(),
                                         0, audioPacket.flag.getFlag());
+                            } else {
+                                audioPassCount++;
                             }
                         }
                     }
@@ -405,6 +486,7 @@ public class Scrcpy extends Service {
 
     public interface ServiceCallbacks {
         void loadNewRotation();
+
         void errorDisconnect();
     }
 
@@ -413,4 +495,6 @@ public class Scrcpy extends Service {
             return Scrcpy.this;
         }
     }
+
+
 }
