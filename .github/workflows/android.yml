@@ -1,10 +1,8 @@
 name: Android CI
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+  # 改为手动触发 (Manual trigger)
+  workflow_dispatch:
 
 permissions:
   contents: write
