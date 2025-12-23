@@ -25,7 +25,7 @@ import android.util.Log;
 import android.view.Display;
 import android.view.KeyEvent;
 import android.view.Surface;
-import android.view.SurfaceHolder; // 新增导入
+import android.view.SurfaceHolder; // 必须导入
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewConfiguration;
@@ -501,6 +501,110 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
                 appswitchButton.setOnClickListener(v -> scrcpy.sendKeyevent(KeyEvent.KEYCODE_APP_SWITCH));
             }
         }
+    }
+
+    private void setSpinner(final int textArrayOptionResId, final int textViewResId, final String preferenceId) {
+
+        final Spinner spinner = findViewById(textViewResId);
+        ArrayAdapter<CharSequence> arrayAdapter = ArrayAdapter.createFromResource(this, textArrayOptionResId, android.R.layout.simple_spinner_item);
+        arrayAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinner.setAdapter(arrayAdapter);
+        spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                PreUtils.put(context, preferenceId, position);
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+                PreUtils.put(context, preferenceId, 0);
+            }
+        });
+        int selection = PreUtils.get(context, preferenceId, 0);
+        if (selection < arrayAdapter.getCount()) {
+            spinner.setSelection(selection);
+        } else {
+            spinner.setSelection(0);
+        }
+    }
+
+    private void getAttributes() {
+
+        final EditText editTextServerHost = findViewById(R.id.editText_server_host);
+        serverAdr = editTextServerHost.getText().toString();
+        if (!TextUtils.isEmpty(serverAdr)) {
+            serverAdr = serverAdr.trim();
+        }
+        if (!TextUtils.isEmpty(serverAdr)) {
+            PreUtils.put(context, Constant.CONTROL_REMOTE_ADDR, serverAdr);
+        }
+        final Spinner videoResolutionSpinner = findViewById(R.id.spinner_video_resolution);
+        final Spinner videoBitrateSpinner = findViewById(R.id.spinner_video_bitrate);
+        final Spinner delayControlSpinner = findViewById(R.id.delay_control_spinner);
+        final Switch a_Switch0 = findViewById(R.id.switch0);
+        boolean no_control = a_Switch0.isChecked();
+        final Switch a_Switch1 = findViewById(R.id.switch1);
+        boolean nav = a_Switch1.isChecked();
+        PreUtils.put(context, Constant.CONTROL_NO, no_control);
+        PreUtils.put(context, Constant.CONTROL_NAV, nav);
+
+        final String[] videoResolutions = getResources().getStringArray(R.array.options_resolution_values)[videoResolutionSpinner.getSelectedItemPosition()].split("x");
+        screenHeight = Integer.parseInt(videoResolutions[0]);
+        screenWidth = Integer.parseInt(videoResolutions[1]);
+        videoBitrate = getResources().getIntArray(R.array.options_bitrate_values)[videoBitrateSpinner.getSelectedItemPosition()];
+        delayControl = getResources().getIntArray(R.array.options_delay_values)[delayControlSpinner.getSelectedItemPosition()];
+    }
+
+    private String[] getHistoryList() {
+        String historyList = PreUtils.get(context, Constant.HISTORY_LIST_KEY, "");
+        if (TextUtils.isEmpty(historyList)) {
+            return new String[]{};
+        }
+        try {
+            JSONArray historyJson = new JSONArray(historyList);
+            String[] retList = new String[historyJson.length()];
+            for (int i = 0; i < historyJson.length(); i++) {
+                retList[i] = historyJson.get(i).toString();
+            }
+            return retList;
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return new String[]{};
+    }
+
+    /**
+     * 保存设备历史连接记录
+     */
+    private boolean saveHistory(String device) {
+        if (headlessMode) {
+            // 无头模式不保存记录
+            return false;
+        }
+        JSONArray historyJson = new JSONArray();
+        String[] historyList = getHistoryList();
+        if (historyList.length == 0) {
+            historyJson.put(device);
+        } else {
+            try {
+                historyJson.put(0, device);
+            } catch (JSONException e) {
+                e.printStackTrace();
+            }
+            // 最多记录 30 个
+            int count = Math.min(historyList.length, 30);
+            for (int i = 0; i < count; i++) {
+                if (!historyList[i].equals(device)) {
+                    historyJson.put(historyList[i]);
+                }
+            }
+        }
+        try {
+            return PreUtils.put(context, Constant.HISTORY_LIST_KEY, historyJson.toString());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return false;
     }
 
     private void swapDimensions() {
