@@ -1,826 +1,501 @@
 package org.client.scrcpy;
 
-import android.annotation.SuppressLint;
-import android.app.Activity;
-import android.content.ComponentName;
-import android.content.Context;
+import android.app.Service;
 import android.content.Intent;
-import android.content.ServiceConnection;
-import android.content.pm.ActivityInfo;
-import android.content.res.AssetManager;
-import android.content.res.Configuration;
-import android.graphics.Color;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.hardware.SensorManager;
-import android.net.Uri;
-import android.os.Build;
-import android.os.Bundle;
+import android.os.Binder;
 import android.os.IBinder;
-import android.os.SystemClock;
 import android.text.TextUtils;
-import android.util.DisplayMetrics;
 import android.util.Log;
-import android.view.Display;
-import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.Surface;
-import android.view.SurfaceHolder;
-import android.view.SurfaceView;
-import android.view.View;
-import android.view.ViewConfiguration;
-import android.view.WindowManager;
-import android.widget.AdapterView;
-import android.widget.ArrayAdapter;
-import android.widget.Button;
-import android.widget.EditText;
-import android.widget.LinearLayout;
-import android.widget.ListPopupWindow;
-import android.widget.Spinner;
-import android.widget.Switch;
-import android.widget.Toast;
-import android.media.MediaCodecList;
-import android.media.MediaCodecInfo;
 
-import org.client.scrcpy.utils.HttpRequest;
-import org.client.scrcpy.utils.PreUtils;
-import org.client.scrcpy.utils.Progress;
-import org.client.scrcpy.utils.ThreadUtils;
+import org.client.scrcpy.decoder.AudioDecoder;
+import org.client.scrcpy.decoder.VideoDecoder;
+import org.client.scrcpy.model.AudioPacket;
+import org.client.scrcpy.model.ByteUtils;
+import org.client.scrcpy.model.MediaPacket;
+import org.client.scrcpy.model.VideoPacket;
 import org.client.scrcpy.utils.Util;
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
 
-import java.io.File;
-import java.io.FileOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.HashMap;
-import java.util.List;
-import java.util.ArrayList;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.util.LinkedList;
+import java.util.Queue;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 
-public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, SensorEventListener {
+public class Scrcpy extends Service {
 
-    // 是否直接连接远程
-    public final static String START_REMOTE = "start_remote_headless";
+    public static final String LOCAL_IP = "127.0.0.1";
+    // 本地画面转发占用的端口
+    public static final int LOCAL_FORWART_PORT = 7008;
 
-    private boolean headlessMode = false;  // 是否为无头模式，不显示操作选项等
+    public static final int DEFAULT_ADB_PORT = 5555;
+    private String serverHost;
+    private int serverPort = DEFAULT_ADB_PORT;
+    private Surface surface;
     private int screenWidth;
     private int screenHeight;
-    private boolean landscape = false;
+
+    private final Queue<byte[]> event = new LinkedList<byte[]>();
+    // private byte[] event = null;
+    private VideoDecoder videoDecoder;
+    private AudioDecoder audioDecoder;
+    private final AtomicBoolean updateAvailable = new AtomicBoolean(false);
+    private final IBinder mBinder = new MyServiceBinder();
     private boolean first_time = true;
-    private boolean result_of_Rotation = false;
-    private boolean serviceBound = false;
-    // 如果 pause 切换到后台，断开后，自动重连
-    // 该状态禁止保存恢复
-    private boolean resumeScrcpy = false;
-    SensorManager sensorManager;
-    private SendCommands sendCommands;
-    private int videoBitrate;
-    private int delayControl;
-    private Context context;
-    private String serverAdr = null;
-    private SurfaceView surfaceView;
-    private Surface surface;
-    private Scrcpy scrcpy;
-    private long timestamp = 0;
 
-    // 新增：选中的编码器
-    private String selectedEncoder = "-";
+    private final AtomicBoolean LetServceRunning = new AtomicBoolean(true);
+    private ServiceCallbacks serviceCallbacks;
+    private final int[] remote_dev_resolution = new int[2];
+    private boolean socket_status = false;
 
-    private LinearLayout linearLayout;
-
-    private int errorCount = 0;  // 连接失败错误的计数，错误超过一定次数重启服务
-
-    private final ServiceConnection serviceConnection = new ServiceConnection() {
-        @Override
-        public void onServiceConnected(ComponentName componentName, IBinder iBinder) {
-            scrcpy = ((Scrcpy.MyServiceBinder) iBinder).getService();
-            scrcpy.setServiceCallbacks(MainActivity.this);
-            serviceBound = true;
-            if (first_time) {
-                if (!Progress.isShowing()) {
-                    Progress.showDialog(MainActivity.this, getString(R.string.please_wait));
-                }
-                scrcpy.start(surface, Scrcpy.LOCAL_IP + ":" + Scrcpy.LOCAL_FORWART_PORT,
-                        screenHeight, screenWidth, delayControl);
-                ThreadUtils.workPost(() -> {
-                    int count = 50;
-                    while (count > 0 && !scrcpy.check_socket_connection()) {
-                        count--;
-                        try {
-                            Thread.sleep(100);
-                        } catch (InterruptedException e) {
-                            e.printStackTrace();
-                        }
-                    }
-                    int finalCount = count;
-                    ThreadUtils.post(() -> {
-                        Progress.closeDialog();
-                        if (finalCount == 0) {
-                            if (serviceBound) {
-                                showMainView();
-                            }
-                            Toast.makeText(context, "Connection Timed out 2", Toast.LENGTH_SHORT).show();
-                        } else {
-                            first_time = false;
-                            // 连接成功后，再把按钮显示出来
-                            set_display_nd_touch();
-                            connectSuccessExt();
-                        }
-                    });
-                });
-            } else {
-                scrcpy.setParms(surface, screenWidth, screenHeight);
-                set_display_nd_touch();
-                connectSuccessExt();
-            }
-        }
-
-        @Override
-        public void onServiceDisconnected(ComponentName componentName) {
-            serviceBound = false;
-        }
-    };
-
-    private void showMainView() {
-        showMainView(false);
-    }
-
-    // userDisconnect ：是否为用户手动断开连接
-    private void showMainView(boolean userDisconnect) {
-        if (scrcpy != null) {
-            scrcpy.StopService();
-        }
-        try {
-            // 可能会导致重复解绑，所以捕获异常
-            unbindService(serviceConnection);
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        if (surface != null) {
-            surface = null;
-        }
-        if (surfaceView != null) {
-            surfaceView = null;
-        }
-        serviceBound = false;
-        scrcpy_main();
-
-        if (scrcpy != null) {
-            scrcpy = null;
-        }
-        // 退出连接，需要处理额外的事件
-        connectExitExt(userDisconnect);
-    }
-
-    @SuppressLint("SourceLockedOrientationActivity")
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        this.context = this;
-        if (savedInstanceState != null) {
-            first_time = savedInstanceState.getBoolean("first_time");
-            landscape = savedInstanceState.getBoolean("landscape");
-            headlessMode = savedInstanceState.getBoolean("headlessMode");
-            resumeScrcpy = savedInstanceState.getBoolean("resumeScrcpy");
-            screenHeight = savedInstanceState.getInt("screenHeight");
-            screenWidth = savedInstanceState.getInt("screenWidth");
-        }
-        // 读取屏幕是横屏、还是竖屏
-        landscape = getApplication().getResources().getConfiguration().orientation
-                != Configuration.ORIENTATION_PORTRAIT;
-        if (first_time) {
-            scrcpy_main();
-        } else {
-            Log.e("Scrcpy: ", "from onCreate");
-            start_screen_copy_magic();
-        }
-        sensorManager = (SensorManager) this.getSystemService(SENSOR_SERVICE);
-        Sensor proximity;
-        proximity = sensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY);
-        sensorManager.registerListener(this, proximity, SensorManager.SENSOR_DELAY_NORMAL);
-
-        if (savedInstanceState != null) {
-            Log.i("Scrcpy", "outState: " + savedInstanceState.getBoolean("from_save_instance"));
-        }
-        // 从销毁状态恢复
-        if (savedInstanceState == null || !savedInstanceState.getBoolean("from_save_instance", false)) {
-            // 初次进入 app
-            if (getIntent() != null && getIntent().getExtras() != null) {
-                headlessMode = getIntent().getExtras().getBoolean(START_REMOTE, headlessMode);
-            }
-        }
-        if (headlessMode && first_time) {
-            getAttributes();
-            connectScrcpyServer(PreUtils.get(this, Constant.CONTROL_REMOTE_ADDR, ""));
-        }
-        if (headlessMode) {
-            View scrollView = findViewById(R.id.main_scroll_view);
-            if (scrollView != null) {
-                scrollView.setVisibility(View.INVISIBLE);
-            }
-        }
-    }
 
     @Override
-    protected void onSaveInstanceState(Bundle outState) {
-        super.onSaveInstanceState(outState);
-        Log.i("Scrcpy", "enter onSaveInstanceState");
-        outState.putBoolean("from_save_instance", true);
-        outState.putBoolean("first_time", first_time);
-        outState.putBoolean("landscape", landscape);
-        outState.putBoolean("headlessMode", headlessMode);
-        outState.putInt("screenHeight", screenHeight);
-        outState.putInt("screenWidth", screenWidth);
+    public IBinder onBind(Intent intent) {
+        return mBinder;
     }
 
-    @SuppressLint("SourceLockedOrientationActivity")
-    public void scrcpy_main() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            this.getWindow().setStatusBarColor(getColor(R.color.status_bar));
-        } else {
-            this.getWindow().setStatusBarColor(getResources().getColor(R.color.status_bar));
-        }
-        final View decorView = getWindow().getDecorView();
-        decorView.setSystemUiVisibility(View.VISIBLE);
-        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-        landscape = false;  // 将模式重新置为 竖屏，模式不正确将导致连接黑屏
-        setContentView(R.layout.activity_main);
-        final Button startButton = findViewById(R.id.button_start);
+    public void setServiceCallbacks(ServiceCallbacks callbacks) {
+        serviceCallbacks = callbacks;
+    }
 
-        sendCommands = new SendCommands();
+    public void setParms(Surface NewSurface, int NewWidth, int NewHeight) {
+        this.screenWidth = NewWidth;
+        this.screenHeight = NewHeight;
+        this.surface = NewSurface;
 
-        startButton.setOnClickListener(v -> {
-            getAttributes();
-            connectScrcpyServer(serverAdr);
-        });
+        videoDecoder.start();
+        audioDecoder.start();
 
-        get_saved_preferences();
-        
-        // 初始化编码器下拉框
-        initEncoderSpinner();
 
-        EditText editText = findViewById(R.id.editText_server_host);
+        updateAvailable.set(true);
 
-        findViewById(R.id.history_list).setOnClickListener(v -> {
-            Log.i("Scrcpy", "focus true");
-            editText.clearFocus();
-            showListPopulWindow(editText);
-        });
+    }
 
-        // 无头模式，实际上要隐藏掉所有控件，否则会被显示出 ip 地址
-        if (headlessMode) {
-            View scrollView = findViewById(R.id.main_scroll_view);
-            if (scrollView != null) {
-                scrollView.setVisibility(View.INVISIBLE);
+    public void start(Surface surface, String serverAdr, int screenHeight, int screenWidth, int delay) {
+        this.videoDecoder = new VideoDecoder();
+        videoDecoder.start();
+
+        this.audioDecoder = new AudioDecoder();
+        audioDecoder.start();
+
+        String[] serverInfo = Util.getServerHostAndPort(serverAdr);
+        this.serverHost = serverInfo[0];
+        this.serverPort = Integer.parseInt(serverInfo[1]);
+
+        this.screenHeight = screenHeight;
+        this.screenWidth = screenWidth;
+        this.surface = surface;
+        Thread thread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                startConnection(serverHost, serverPort, delay);
             }
+        });
+        thread.start();
+    }
+
+    public void pause() {
+        if (videoDecoder != null) {
+            videoDecoder.stop();
+        }
+
+        if (audioDecoder != null) {
+            audioDecoder.stop();
         }
     }
-    
-    // 初始化编码器下拉框
-    private void initEncoderSpinner() {
-        Spinner encoderSpinner = findViewById(R.id.spinner_encoder);
-        if (encoderSpinner == null) return;
-        List<String> encoders = new ArrayList<>();
-        encoders.add("Default"); // 默认选项
 
-        // 获取支持 video/avc (H.264) 的编码器
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            MediaCodecList list = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
-            for (MediaCodecInfo info : list.getCodecInfos()) {
-                if (!info.isEncoder()) continue;
-                try {
-                    MediaCodecInfo.CodecCapabilities caps = info.getCapabilitiesForType("video/avc");
-                    if (caps != null) {
-                        encoders.add(info.getName());
-                    }
-                } catch (IllegalArgumentException e) {
-                    // 忽略不支持 avc 的编码器
+    public void resume() {
+        if (videoDecoder != null) {
+            videoDecoder.start();
+        }
+        if (audioDecoder != null) {
+            audioDecoder.start();
+        }
+        updateAvailable.set(true);
+    }
+
+    public void StopService() {
+        LetServceRunning.set(false);
+        if (videoDecoder != null) {
+            videoDecoder.stop();
+        }
+        if (audioDecoder != null) {
+            audioDecoder.stop();
+        }
+        stopSelf();
+    }
+
+
+    public boolean touchevent(MotionEvent touch_event, boolean landscape, int displayW, int displayH) {
+        float remoteW;
+        float remoteH;
+        float realH;
+        float realW;
+
+        if (landscape) {  // 横屏的话，宽高相反
+            remoteW = Math.max(remote_dev_resolution[0], remote_dev_resolution[1]);
+            remoteH = Math.min(remote_dev_resolution[0], remote_dev_resolution[1]);
+
+            realW = Math.min(remoteW, screenWidth);
+            realH = realW * remoteH / remoteW;
+        } else {
+            remoteW = Math.min(remote_dev_resolution[0], remote_dev_resolution[1]);
+            remoteH = Math.max(remote_dev_resolution[0], remote_dev_resolution[1]);
+            realH = Math.min(remoteH, screenHeight);
+            realW = realH * remoteW / remoteH;
+        }
+
+        int actionIndex = touch_event.getActionIndex();
+        int pointerId = touch_event.getPointerId(actionIndex);
+        int pointCount = touch_event.getPointerCount();
+        // Log.e("Scrcpy", "pointer id: " + pointerId + " , action: " + touch_event.getAction() + " ,point count: " + pointCount + " x: " + touch_event.getX() + " y: " + touch_event.getY());
+
+        switch (touch_event.getAction()) {
+            case MotionEvent.ACTION_MOVE: // 所有手指移动
+                // 遍历所有触摸点，使用 pointerId 和 pointerIndex 来获取所有触摸点的信息
+                for (int i = 0; i < touch_event.getPointerCount(); i++) {
+                    int currentPointerId = touch_event.getPointerId(i);
+                    int x = (int) touch_event.getX(i);
+                    int y = (int) touch_event.getY(i);
+                    // 处理每一个触摸点的x, y坐标
+                    // Log.e("Scrcpy", "触摸移动，index : " + i + " ,x : " + x + " , y: " + y + " ,currentPointerId: " + currentPointerId);
+                    sendTouchEvent(touch_event.getAction(), touch_event.getButtonState(), (int) (x * realW / displayW), (int) (y * realH / displayH), currentPointerId);
                 }
-            }
+                break;
+            case MotionEvent.ACTION_POINTER_UP: // 中间手指抬起
+            case MotionEvent.ACTION_UP: // 最后一个手指抬起
+            case MotionEvent.ACTION_DOWN: // 第一个手指按下
+            case MotionEvent.ACTION_POINTER_DOWN: // 中间的手指按下
+            default:
+                sendTouchEvent(touch_event.getAction(), touch_event.getButtonState(), (int) (touch_event.getX() * realW / displayW), (int) (touch_event.getY() * realH / displayH), pointerId);
+                break;
+
         }
-
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, encoders);
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        encoderSpinner.setAdapter(adapter);
-
-        // 恢复上次的选择
-        String savedEncoder = PreUtils.get(context, "saved_encoder_name", "Default");
-        int spinnerPosition = adapter.getPosition(savedEncoder);
-        if (spinnerPosition >= 0) {
-            encoderSpinner.setSelection(spinnerPosition);
-        }
-
-        encoderSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                String name = encoders.get(position);
-                if ("Default".equals(name)) {
-                    selectedEncoder = "-";
-                } else {
-                    selectedEncoder = name;
-                }
-                PreUtils.put(context, "saved_encoder_name", name);
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {}
-        });
+        return true;
     }
 
-    private void showListPopulWindow(EditText mEditText) {
-        String[] list = getHistoryList();//要填充的数据
-        if (list.length == 0) {  // 如果list为空，则使用本机填充一个
-            list = new String[]{"127.0.0.1"};
+    private void sendTouchEvent(int action, int buttonState, int x, int y, int pointerId){
+        // 为支持多点触控，将 pointid 添加到最末尾
+        // TODO : 后续需要改造 event 传输方式
+        int[] buf = new int[]{action, buttonState, x, y, pointerId};
+        final byte[] array = new byte[buf.length * 4]; // https://stackoverflow.com/questions/2183240/java-integer-to-byte-array
+        for (int j = 0; j < buf.length; j++) {
+            final int c = buf[j];
+            array[j * 4] = (byte) ((c & 0xFF000000) >> 24);
+            array[j * 4 + 1] = (byte) ((c & 0xFF0000) >> 16);
+            array[j * 4 + 2] = (byte) ((c & 0xFF00) >> 8);
+            array[j * 4 + 3] = (byte) (c & 0xFF);
         }
-        final ListPopupWindow listPopupWindow;
-        listPopupWindow = new ListPopupWindow(this);
-        listPopupWindow.setAdapter(new ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, list));//用android内置布局，或设计自己的样式
-        listPopupWindow.setAnchorView(mEditText);//以哪个控件为基准，在该处以mEditText为基准
-        listPopupWindow.setModal(true);
-        listPopupWindow.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-
-        String[] finalList = list;
-        listPopupWindow.setOnItemClickListener(new AdapterView.OnItemClickListener() {//设置项点击监听
-            @Override
-            public void onItemClick(AdapterView<?> adapterView, View view, int i, long l) {
-                mEditText.setText(finalList[i]);
-                listPopupWindow.dismiss();
-            }
-        });
-        listPopupWindow.show();
+        if (LetServceRunning.get()) {
+            event.offer(array);
+        }
+        // event = array;
     }
 
-    public void get_saved_preferences() {
-        final EditText editTextServerHost = findViewById(R.id.editText_server_host);
-        final Switch aSwitch0 = findViewById(R.id.switch0);
-        final Switch aSwitch1 = findViewById(R.id.switch1);
-        final Switch aSwitch2 = findViewById(R.id.switch2); // Switch2
-
-        String historySpServerAdr = PreUtils.get(context, Constant.CONTROL_REMOTE_ADDR, "");
-        if (TextUtils.isEmpty(historySpServerAdr)) {
-            String[] historyList = getHistoryList();
-            if (historyList.length > 0) {
-                editTextServerHost.setText(historyList[0]);
-            }
-        } else {
-            editTextServerHost.setText(historySpServerAdr);
-        }
-        aSwitch0.setChecked(PreUtils.get(context, Constant.CONTROL_NO, false));
-        aSwitch1.setChecked(PreUtils.get(context, Constant.CONTROL_NAV, false));
-        aSwitch2.setChecked(PreUtils.get(context, Constant.KEEP_BACKGROUND, false)); // 加载后台保持配置
-
-        setSpinner(R.array.options_resolution_values, R.id.spinner_video_resolution, Constant.PREFERENCE_SPINNER_RESOLUTION);
-        setSpinner(R.array.options_bitrate_keys, R.id.spinner_video_bitrate, Constant.PREFERENCE_SPINNER_BITRATE);
-        setSpinner(R.array.options_delay_keys, R.id.delay_control_spinner, Constant.PREFERENCE_SPINNER_DELAY);
-        if (aSwitch0.isChecked()) {
-            aSwitch1.setClickable(false);
-            aSwitch1.setTextColor(Color.GRAY);
-        }
-
-        aSwitch0.setOnClickListener(v -> {
-            if (aSwitch0.isChecked()) {
-                aSwitch1.setClickable(false);
-                aSwitch1.setTextColor(Color.GRAY);
-            } else {
-                aSwitch1.setClickable(true);
-                aSwitch1.setTextColor(Color.WHITE);
-            }
-        });
-        
-        // 监听后台保持开关
-        aSwitch2.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            PreUtils.put(context, Constant.KEEP_BACKGROUND, isChecked);
-        });
+    public int[] get_remote_device_resolution() {
+        return remote_dev_resolution;
     }
 
-    @SuppressLint("ClickableViewAccessibility")
-    public void set_display_nd_touch() {
-        DisplayMetrics metrics = new DisplayMetrics();
-        if (ViewConfiguration.get(context).hasPermanentMenuKey()) {
-            getWindowManager().getDefaultDisplay().getMetrics(metrics);
-        } else {
-            final Display display = getWindowManager().getDefaultDisplay();
-            display.getRealMetrics(metrics);
+    public boolean check_socket_connection() {
+        return socket_status;
+    }
+
+    public void sendKeyevent(int keycode) {
+        int[] buf = new int[]{keycode};
+
+        final byte[] array = new byte[buf.length * 4];   // https://stackoverflow.com/questions/2183240/java-integer-to-byte-array
+        for (int j = 0; j < buf.length; j++) {
+            final int c = buf[j];
+            array[j * 4] = (byte) ((c & 0xFF000000) >> 24);
+            array[j * 4 + 1] = (byte) ((c & 0xFF0000) >> 16);
+            array[j * 4 + 2] = (byte) ((c & 0xFF00) >> 8);
+            array[j * 4 + 3] = (byte) (c & 0xFF);
         }
-
-        float this_dev_height = linearLayout.getHeight();
-        float this_dev_width = linearLayout.getWidth();
-        if (PreUtils.get(context, Constant.CONTROL_NAV, false) &&
-                !PreUtils.get(context, Constant.CONTROL_NO, false)) {
-            if (landscape) {
-                this_dev_width = this_dev_width - 96;
-            } else {                                                 
-                this_dev_height = this_dev_height - 96;
-            }
-        }
-        int[] rem_res = scrcpy.get_remote_device_resolution();
-        int remote_device_height = rem_res[1];
-        int remote_device_width = rem_res[0];
-        float remote_device_aspect_ratio = (float) remote_device_height / remote_device_width;
-
-        if (!landscape) {                                                            //Portrait
-            float this_device_aspect_ratio = this_dev_height / this_dev_width;
-            if (remote_device_aspect_ratio > this_device_aspect_ratio) {
-                float wantWidth = this_dev_height / remote_device_aspect_ratio;
-                int padding = (int) (this_dev_width - wantWidth) / 2;
-                linearLayout.setPadding(padding, 0, padding, 0);
-            } else if (remote_device_aspect_ratio < this_device_aspect_ratio) {
-                linearLayout.setPadding(0, (int) (((this_device_aspect_ratio - remote_device_aspect_ratio) * this_dev_width)), 0, 0);
-            }
-
-        } else {                                                                        //Landscape
-            float this_device_aspect_ratio = this_dev_width / this_dev_height;
-            if (remote_device_aspect_ratio > this_device_aspect_ratio) {
-                float wantHeight = this_dev_width / remote_device_aspect_ratio;
-                int padding = (int) (this_dev_height - wantHeight) / 2;
-                linearLayout.setPadding(0, padding, 0, padding);
-            } else if (remote_device_aspect_ratio < this_device_aspect_ratio) {
-                linearLayout.setPadding(((int) (((this_device_aspect_ratio - remote_device_aspect_ratio) * this_dev_height)) / 2), 0, ((int) (((this_device_aspect_ratio - remote_device_aspect_ratio) * this_dev_height)) / 2), 0);
-            }
-
-        }
-        if (!PreUtils.get(context, Constant.CONTROL_NO, false)) {
-            surfaceView.setOnTouchListener((view, event) -> scrcpy.touchevent(event, landscape, surfaceView.getWidth(), surfaceView.getHeight()));
-        }
-
-        if (PreUtils.get(context, Constant.CONTROL_NAV, false) &&
-                !PreUtils.get(context, Constant.CONTROL_NO, false)) {
-            final View backButton = findViewById(R.id.back_button);
-            final View homeButton = findViewById(R.id.home_button);
-            final View appswitchButton = findViewById(R.id.appswitch_button);
-
-            if (backButton != null) {
-                backButton.setOnClickListener(v -> scrcpy.sendKeyevent(KeyEvent.KEYCODE_BACK));
-            }
-            if (homeButton != null) {
-                homeButton.setOnClickListener(v -> scrcpy.sendKeyevent(KeyEvent.KEYCODE_HOME));
-            }
-            if (appswitchButton != null) {
-                appswitchButton.setOnClickListener(v -> scrcpy.sendKeyevent(KeyEvent.KEYCODE_APP_SWITCH));
-            }
+        if (LetServceRunning.get()) {
+            event.offer(array);
+            // event = array;
         }
     }
 
-    private void setSpinner(final int textArrayOptionResId, final int textViewResId, final String preferenceId) {
+    private void startConnection(String ip, int port, int delay) {
 
-        final Spinner spinner = findViewById(textViewResId);
-        ArrayAdapter<CharSequence> arrayAdapter = ArrayAdapter.createFromResource(this, textArrayOptionResId, android.R.layout.simple_spinner_item);
-        arrayAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        spinner.setAdapter(arrayAdapter);
-        spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                PreUtils.put(context, preferenceId, position);
-            }
+        videoDecoder = new VideoDecoder();
+        videoDecoder.start();
+        audioDecoder = new AudioDecoder();
+        audioDecoder.start();
 
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {
-                PreUtils.put(context, preferenceId, 0);
-            }
-        });
-        int selection = PreUtils.get(context, preferenceId, 0);
-        if (selection < arrayAdapter.getCount()) {
-            spinner.setSelection(selection);
-        } else {
-            spinner.setSelection(0);
-        }
-    }
-
-    private void getAttributes() {
-
-        final EditText editTextServerHost = findViewById(R.id.editText_server_host);
-        serverAdr = editTextServerHost.getText().toString();
-        if (!TextUtils.isEmpty(serverAdr)) {
-            serverAdr = serverAdr.trim();
-        }
-        if (!TextUtils.isEmpty(serverAdr)) {
-            PreUtils.put(context, Constant.CONTROL_REMOTE_ADDR, serverAdr);
-        }
-        final Spinner videoResolutionSpinner = findViewById(R.id.spinner_video_resolution);
-        final Spinner videoBitrateSpinner = findViewById(R.id.spinner_video_bitrate);
-        final Spinner delayControlSpinner = findViewById(R.id.delay_control_spinner);
-        final Switch a_Switch0 = findViewById(R.id.switch0);
-        boolean no_control = a_Switch0.isChecked();
-        final Switch a_Switch1 = findViewById(R.id.switch1);
-        boolean nav = a_Switch1.isChecked();
-        PreUtils.put(context, Constant.CONTROL_NO, no_control);
-        PreUtils.put(context, Constant.CONTROL_NAV, nav);
-
-        final String[] videoResolutions = getResources().getStringArray(R.array.options_resolution_values)[videoResolutionSpinner.getSelectedItemPosition()].split("x");
-        screenHeight = Integer.parseInt(videoResolutions[0]);
-        screenWidth = Integer.parseInt(videoResolutions[1]);
-        videoBitrate = getResources().getIntArray(R.array.options_bitrate_values)[videoBitrateSpinner.getSelectedItemPosition()];
-        delayControl = getResources().getIntArray(R.array.options_delay_values)[delayControlSpinner.getSelectedItemPosition()];
-    }
-
-    private String[] getHistoryList() {
-        String historyList = PreUtils.get(context, Constant.HISTORY_LIST_KEY, "");
-        if (TextUtils.isEmpty(historyList)) {
-            return new String[]{};
-        }
-        try {
-            JSONArray historyJson = new JSONArray(historyList);
-            String[] retList = new String[historyJson.length()];
-            for (int i = 0; i < historyJson.length(); i++) {
-                retList[i] = historyJson.get(i).toString();
-            }
-            return retList;
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        return new String[]{};
-    }
-
-    private boolean saveHistory(String device) {
-        if (headlessMode) {
-            return false;
-        }
-        JSONArray historyJson = new JSONArray();
-        String[] historyList = getHistoryList();
-        if (historyList.length == 0) {
-            historyJson.put(device);
-        } else {
+        DataInputStream dataInputStream = null;
+        DataOutputStream dataOutputStream = null;
+        Socket socket = null;
+        boolean firstConnect = true;
+        int attempts = 50;
+        while (attempts > 0) {
             try {
-                historyJson.put(0, device);
-            } catch (JSONException e) {
+                Log.e("Scrcpy", "Connecting to " + LOCAL_IP);
+                // socket = new Socket(ip, port);
+                socket = new Socket();
+                socket.connect(new InetSocketAddress(ip, port), 5000); //设置超时5000毫秒
+                if (!LetServceRunning.get()) {
+                    return;
+                }
+
+                Log.e("Scrcpy", "Connecting to " + LOCAL_IP + " success");
+
+                // 能够正常进行连接，说明可能建立了 tcp 连接，需要等待数据
+                // 一次等待时间为 2s ，最多等待五次，也就是 10秒
+                if (firstConnect) {  // 此处有 while 循环，不能一直设置为10
+                    firstConnect = false;
+                    // waitResolutionCount 为 10，等待100ms 也就是共计一秒钟，设置attempts 为 5，也就是 5秒后则退出
+                    attempts = 5;
+                }
+                dataInputStream = new DataInputStream(socket.getInputStream());
+                int waitResolutionCount = 10;
+                while (dataInputStream.available() <= 0 && waitResolutionCount > 0) {
+                    waitResolutionCount--;
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException ignore) {
+                    }
+                }
+                if (dataInputStream.available() <= 0) {
+                    throw new IOException("can't read socket Resolution : " + attempts);
+                }
+
+
+                dataOutputStream = new DataOutputStream(socket.getOutputStream());
+                attempts = 0;
+                byte[] buf = new byte[16];
+                dataInputStream.read(buf, 0, 16);
+                for (int i = 0; i < remote_dev_resolution.length; i++) {
+                    remote_dev_resolution[i] = (((int) (buf[i * 4]) << 24) & 0xFF000000) |
+                            (((int) (buf[i * 4 + 1]) << 16) & 0xFF0000) |
+                            (((int) (buf[i * 4 + 2]) << 8) & 0xFF00) |
+                            ((int) (buf[i * 4 + 3]) & 0xFF);
+                }
+                if (remote_dev_resolution[0] > remote_dev_resolution[1]) {
+                    first_time = false;
+                    int i = remote_dev_resolution[0];
+                    remote_dev_resolution[0] = remote_dev_resolution[1];
+                    remote_dev_resolution[1] = i;
+                }
+                socket_status = true;
+
+                loop(dataInputStream, dataOutputStream, delay);
+
+            } catch (Exception e) {
                 e.printStackTrace();
-            }
-            // 最多记录 30 个
-            int count = Math.min(historyList.length, 30);
-            for (int i = 0; i < count; i++) {
-                if (!historyList[i].equals(device)) {
-                    historyJson.put(historyList[i]);
-                }
-            }
-        }
-        try {
-            return PreUtils.put(context, Constant.HISTORY_LIST_KEY, historyJson.toString());
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        return false;
-    }
+                if (LetServceRunning.get()) {
+                    attempts--;
+                    if (attempts < 0) {
+                        socket_status = false;
 
-    private void swapDimensions() {
-        int temp = screenHeight;
-        screenHeight = screenWidth;
-        screenWidth = temp;
-    }
-
-    @SuppressLint("ClickableViewAccessibility")
-    private void start_screen_copy_magic() {
-        setContentView(R.layout.surface);
-        final View decorView = getWindow().getDecorView();
-        decorView.setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                        | View.SYSTEM_UI_FLAG_FULLSCREEN
-                        | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
-        surfaceView = findViewById(R.id.decoder_surface);
-        
-        // 核心修改：增加 Surface 生命周期监听，解决黑屏问题
-        surfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
-            @Override
-            public void surfaceCreated(SurfaceHolder holder) {
-                if (serviceBound) {
-                    Log.i("Scrcpy", "Surface created, updating decoder...");
-                    surface = holder.getSurface();
-                    scrcpy.setParms(surface, screenWidth, screenHeight);
-                    scrcpy.resume(); 
-                }
-            }
-
-            @Override
-            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {}
-
-            @Override
-            public void surfaceDestroyed(SurfaceHolder holder) {
-                if (serviceBound) {
-                    Log.i("Scrcpy", "Surface destroyed, pausing decoder...");
-                    scrcpy.pause();
-                }
-            }
-        });
-        
-        surface = surfaceView.getHolder().getSurface();
-        final LinearLayout nav_bar = findViewById(R.id.nav_button_bar);
-        if (PreUtils.get(context, Constant.CONTROL_NAV, false) &&
-                !PreUtils.get(context, Constant.CONTROL_NO, false)) {
-            nav_bar.setVisibility(LinearLayout.VISIBLE);
-        } else {
-            nav_bar.setVisibility(LinearLayout.GONE);
-        }
-        linearLayout = findViewById(R.id.container1);
-        start_Scrcpy_service();
-    }
-
-
-    private void start_Scrcpy_service() {
-        Intent intent = new Intent(this, Scrcpy.class);
-        startService(intent);
-        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
-    }
-
-    @SuppressLint("SourceLockedOrientationActivity")
-    @Override
-    public void loadNewRotation() {
-        if (first_time) {
-            first_time = false;
-        }
-        try {
-            unbindService(serviceConnection);
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        serviceBound = false;
-        result_of_Rotation = true;
-        landscape = !landscape;
-        swapDimensions();
-        if (landscape) {
-            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
-        } else {
-            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT);
-        }
-    }
-
-    @Override
-    public void errorDisconnect() {
-        Dialog.displayDialog(this, getString(R.string.disconnect),
-                getString(R.string.disconnect_ask), () -> {
-                    if (serviceBound) {
-                        showMainView();
-                        first_time = true;
-                    } else {
-                        MainActivity.this.finish();
-                    }
-                }, false);
-    }
-
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-        if (serviceBound) {
-            scrcpy.pause();
-            resumeScrcpy = true;
-            boolean keepBackground = PreUtils.get(context, Constant.KEEP_BACKGROUND, false);
-            if (!keepBackground) {
-                showMainView(true);
-                first_time = true;
-            }
-        }
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        if (!first_time && !result_of_Rotation) {
-            final View decorView = getWindow().getDecorView();
-            decorView.setSystemUiVisibility(
-                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                            | View.SYSTEM_UI_FLAG_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
-            if (serviceBound) {
-                linearLayout = findViewById(R.id.container1);
-            }
-        }
-        if (resumeScrcpy && !result_of_Rotation && !serviceBound) {
-            resumeScrcpy = false;
-            connectScrcpyServer(PreUtils.get(context, Constant.CONTROL_REMOTE_ADDR, ""));
-        }
-        if (serviceBound) {
-            resumeScrcpy = false;
-        }
-        result_of_Rotation = false;
-    }
-
-    @Override
-    public void onBackPressed() {
-        if (timestamp == 0) {
-            if (serviceBound) {
-                timestamp = SystemClock.uptimeMillis();
-                Toast.makeText(context, "Press again to exit", Toast.LENGTH_SHORT).show();
-            } else {
-                finish();
-            }
-        } else {
-            long now = SystemClock.uptimeMillis();
-            if (now < timestamp + 1000) {
-                timestamp = 0;
-                if (serviceBound) {
-                    showMainView(true);
-                    first_time = true;
-                    errorCount = 0;
-                } else {
-                    finish();
-                }
-            }
-            timestamp = 0;
-        }
-    }
-
-    @Override
-    public void onSensorChanged(SensorEvent sensorEvent) {
-        if (sensorEvent.sensor.getType() == Sensor.TYPE_PROXIMITY) {
-            if (sensorEvent.values[0] == 0) {
-                if (serviceBound) {}
-            } else {
-                if (serviceBound) {}
-            }
-        }
-    }
-
-    @Override
-    public void onAccuracyChanged(Sensor sensor, int i) {}
-
-    private void connectScrcpyServer(String serverAdr) {
-        if (!TextUtils.isEmpty(serverAdr)) {
-            saveHistory(serverAdr);
-            String[] serverInfo = Util.getServerHostAndPort(serverAdr);
-            String serverHost = serverInfo[0];
-            int serverPort = Integer.parseInt(serverInfo[1]);
-            int localForwardPort = Scrcpy.LOCAL_FORWART_PORT;
-
-            Progress.showDialog(MainActivity.this, getString(R.string.please_wait));
-            ThreadUtils.workPost(() -> {
-                AssetManager assetManager = getAssets();
-                Log.d("Scrcpy", "File scrcpy-server.jar try write");
-                try {
-                    InputStream input_Stream = assetManager.open("scrcpy-server.jar");
-                    byte[] buffer = new byte[input_Stream.available()];
-                    input_Stream.read(buffer);
-                    File scrcpyDir = context.getExternalFilesDir("scrcpy");
-                    if (!scrcpyDir.exists()) {
-                        scrcpyDir.mkdirs();
-                    }
-                    FileOutputStream outputStream = new FileOutputStream(new File(
-                            context.getExternalFilesDir("scrcpy"), "scrcpy-server.jar"
-                    ));
-                    outputStream.write(buffer);
-                    outputStream.flush();
-                    outputStream.close();
-                } catch (IOException e) {
-                    Log.d("Scrcpy", "File scrcpy-server.jar write faild");
-                }
-                
-                // 传入 selectedEncoder
-                if (sendCommands.SendAdbCommands(context, serverHost,
-                        serverPort,
-                        localForwardPort,
-                        Scrcpy.LOCAL_IP,
-                        videoBitrate, Math.max(screenHeight, screenWidth),
-                        selectedEncoder) == 0) {
-                    ThreadUtils.post(() -> {
-                        if (!MainActivity.this.isFinishing()) {
-                            Log.e("Scrcpy: ", "from startButton");
-                            start_screen_copy_magic();
+                        if (serviceCallbacks != null) {
+                            serviceCallbacks.errorDisconnect();
                         }
-                    });
-                } else {
-                    ThreadUtils.post(Progress::closeDialog);
-                    Toast.makeText(context, "Network OR ADB connection failed", Toast.LENGTH_SHORT).show();
-                    connectExitExt();
+                        return;
+                    }
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException ignore) {
+                    }
                 }
-            });
-        } else {
-            Toast.makeText(context, "Server Address Empty", Toast.LENGTH_SHORT).show();
-            connectExitExt();
+                Log.e("Scrcpy", e.getMessage());
+                Log.e("Scrcpy", "attempts--");
+            } finally {
+                if (socket != null) {
+                    try {
+                        socket.close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+                if (dataOutputStream != null) {
+                    try {
+                        dataOutputStream.close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+                if (dataInputStream != null) {
+                    try {
+                        dataInputStream.close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+                // 清除事件队列
+                event.clear();
+
+            }
+
         }
+
     }
 
-    protected void connectSuccessExt() {
-        errorCount = 0;
-    }
+    private void loop(DataInputStream dataInputStream, DataOutputStream dataOutputStream, int delay) throws InterruptedException {
+        VideoPacket.StreamSettings streamSettings = null;
+        byte[] packetSize = new byte[4];
 
-    protected void connectExitExt() {
-        this.connectExitExt(false);
-    }
+        // 由于网络传输存在延迟，丢弃数据包计数
+        long lastVideoOffset = 0;
+        long lastAudioOffset = 0;
+        int videoPassCount = 0;
+        int audioPassCount = 0;
 
-    protected void connectExitExt(boolean userDisconnect) {
-        if (!userDisconnect) {
-            errorCount += 1;
-            Log.i("Scrcpy", "连接错误次数: " + errorCount);
-            App.startAdbServer();
-        }
-        if (headlessMode && !resumeScrcpy && !result_of_Rotation) {
-            if (!userDisconnect) {
-                Dialog.displayDialog(this, getString(R.string.connect_faild),
-                        getString(R.string.connect_faild_ask), () -> {
-                            connectScrcpyServer(PreUtils.get(context, Constant.CONTROL_REMOTE_ADDR, ""));
-                        }, () -> {
-                            finishAndRemoveTask();
-                        });
-            } else {
-                finishAndRemoveTask();
+        while (LetServceRunning.get()) {
+            boolean waitEvent = true;
+            try {
+                byte[] sendevent = event.poll();
+                if (sendevent != null) {
+                    waitEvent = false;
+                    try {
+                        dataOutputStream.write(sendevent, 0, sendevent.length);
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                        if (serviceCallbacks != null) {
+                            serviceCallbacks.errorDisconnect();
+                        }
+                        LetServceRunning.set(false);
+                    } finally {
+                        // event = null;
+                    }
+                }
+
+                if (dataInputStream.available() > 0) {
+                    waitEvent = false;
+                    dataInputStream.readFully(packetSize, 0, 4);
+                    int size = ByteUtils.bytesToInt(packetSize);
+                    if (size > 4 * 1024 * 1024) {  // 如果单个数据包大于 4m ，直接断开连接
+                        if (serviceCallbacks != null) {
+                            serviceCallbacks.errorDisconnect();
+                        }
+                        LetServceRunning.set(false);
+                        return;
+                    }
+                    byte[] packet = new byte[size];
+                    dataInputStream.readFully(packet, 0, size);
+                    if (MediaPacket.Type.getType(packet[0]) == MediaPacket.Type.VIDEO) {
+                        VideoPacket videoPacket = VideoPacket.readHead(packet);
+                        
+                        // --- 修复开始 ---
+                        // 1. 优先检查并处理 Surface 更新 (切后台回来)
+                        if (updateAvailable.get()) {
+                            updateAvailable.set(false);
+                            // 如果之前已经保存过配置信息，立即重新配置解码器
+                            if (streamSettings != null) {
+                                Log.i("Scrcpy", "Updating decoder surface from saved settings");
+                                videoDecoder.configure(surface, screenWidth, screenHeight, streamSettings.sps, streamSettings.pps);
+                            }
+                        }
+
+                        // 2. 无论是否更新了 Surface，都要处理当前收到的数据包！
+                        if (videoPacket.flag == VideoPacket.Flag.CONFIG) {
+                            int dataLength = packet.length - VideoPacket.getHeadLen();
+                            byte[] data = new byte[dataLength];
+                            System.arraycopy(packet, VideoPacket.getHeadLen(), data, 0, dataLength);
+                            streamSettings = VideoPacket.getStreamSettings(data);
+                            
+                            // 这是一个配置包 (比如屏幕旋转)，正常处理逻辑
+                            if (!first_time) {
+                                if (serviceCallbacks != null) {
+                                    serviceCallbacks.loadNewRotation();
+                                }
+                                while (!updateAvailable.get()) {
+                                    // Waiting for new surface
+                                    try {
+                                        Thread.sleep(100);
+                                    } catch (InterruptedException e) {
+                                        e.printStackTrace();
+                                    }
+                                }
+                                updateAvailable.set(false); // 消费掉这个标志
+                            }
+                            
+                            if (streamSettings != null) {
+                                videoDecoder.configure(surface, screenWidth, screenHeight, streamSettings.sps, streamSettings.pps);
+                            }
+                        } else if (videoPacket.flag == VideoPacket.Flag.END) {
+                            // need close stream
+                            Log.e("Scrcpy", "END ... ");
+                        } else {
+                            // 3. 这是普通的视频帧，必须解码显示！(修复前如果 updateAvailable 为真，这里会被跳过)
+                            
+                            // Log.e("Scrcpy", "videoPacket presentationTimeStamp ... " + videoPacket.presentationTimeStamp);
+                            // 帧在 100 ms 以内
+                            if (lastVideoOffset == 0) {
+                                lastVideoOffset = System.currentTimeMillis() - (videoPacket.presentationTimeStamp / 1000);
+                            }
+                            if (videoPacket.flag == VideoPacket.Flag.KEY_FRAME) {
+                                videoDecoder.decodeSample(packet, VideoPacket.getHeadLen(), packet.length - VideoPacket.getHeadLen(),
+                                        0, videoPacket.flag.getFlag());
+                            } else {
+                                if (System.currentTimeMillis() - (lastVideoOffset + (videoPacket.presentationTimeStamp / 1000)) < delay) {
+                                    videoPassCount = 0;
+                                    videoDecoder.decodeSample(packet, VideoPacket.getHeadLen(), packet.length - VideoPacket.getHeadLen(),
+                                            0, videoPacket.flag.getFlag());
+                                } else {
+                                    videoPassCount++;
+                                }
+                            }
+                        }
+                        // --- 修复结束 ---
+                        
+                        first_time = false;
+                    } else if (MediaPacket.Type.getType(packet[0]) == MediaPacket.Type.AUDIO) {
+                        AudioPacket audioPacket = AudioPacket.readHead(packet);
+                        // byte[] data = audioPacket.data;
+                        if (audioPacket.flag == AudioPacket.Flag.CONFIG) {
+                            int dataLength = packet.length - AudioPacket.getHeadLen();
+                            byte[] data = new byte[dataLength];
+                            System.arraycopy(packet, AudioPacket.getHeadLen(), data, 0, dataLength);
+                            audioDecoder.configure(data);
+                        } else if (audioPacket.flag == AudioPacket.Flag.END) {
+                            // need close stream
+                            Log.e("Scrcpy", "Audio END ... ");
+                        } else {
+                            if (lastAudioOffset == 0) {
+                                lastAudioOffset = System.currentTimeMillis() - (audioPacket.presentationTimeStamp / 1000);
+                            }
+                            if (System.currentTimeMillis() - (lastAudioOffset + (audioPacket.presentationTimeStamp / 1000)) < delay) {
+                                audioPassCount = 0;
+                                audioDecoder.decodeSample(packet, VideoPacket.getHeadLen(), packet.length - AudioPacket.getHeadLen(),
+                                        0, audioPacket.flag.getFlag());
+                            } else {
+                                audioPassCount++;
+                            }
+                        }
+                    }
+
+                }
+            } catch (IOException e) {
+                Log.e("Scrcpy", "IOException: " + e.getMessage());
+                e.printStackTrace();
+            } finally {
+                if (waitEvent) {
+                    Thread.sleep(5);
+                }
             }
         }
     }
+
+    public interface ServiceCallbacks {
+        void loadNewRotation();
+
+        void errorDisconnect();
+    }
+
+    public class MyServiceBinder extends Binder {
+        public Scrcpy getService() {
+            return Scrcpy.this;
+        }
+    }
+
+
 }
