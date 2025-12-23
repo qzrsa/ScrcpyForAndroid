@@ -25,6 +25,7 @@ import android.util.Log;
 import android.view.Display;
 import android.view.KeyEvent;
 import android.view.Surface;
+import android.view.SurfaceHolder; // 新增导入
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewConfiguration;
@@ -502,110 +503,6 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
         }
     }
 
-    private void setSpinner(final int textArrayOptionResId, final int textViewResId, final String preferenceId) {
-
-        final Spinner spinner = findViewById(textViewResId);
-        ArrayAdapter<CharSequence> arrayAdapter = ArrayAdapter.createFromResource(this, textArrayOptionResId, android.R.layout.simple_spinner_item);
-        arrayAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        spinner.setAdapter(arrayAdapter);
-        spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                PreUtils.put(context, preferenceId, position);
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {
-                PreUtils.put(context, preferenceId, 0);
-            }
-        });
-        int selection = PreUtils.get(context, preferenceId, 0);
-        if (selection < arrayAdapter.getCount()) {
-            spinner.setSelection(selection);
-        } else {
-            spinner.setSelection(0);
-        }
-    }
-
-    private void getAttributes() {
-
-        final EditText editTextServerHost = findViewById(R.id.editText_server_host);
-        serverAdr = editTextServerHost.getText().toString();
-        if (!TextUtils.isEmpty(serverAdr)) {
-            serverAdr = serverAdr.trim();
-        }
-        if (!TextUtils.isEmpty(serverAdr)) {
-            PreUtils.put(context, Constant.CONTROL_REMOTE_ADDR, serverAdr);
-        }
-        final Spinner videoResolutionSpinner = findViewById(R.id.spinner_video_resolution);
-        final Spinner videoBitrateSpinner = findViewById(R.id.spinner_video_bitrate);
-        final Spinner delayControlSpinner = findViewById(R.id.delay_control_spinner);
-        final Switch a_Switch0 = findViewById(R.id.switch0);
-        boolean no_control = a_Switch0.isChecked();
-        final Switch a_Switch1 = findViewById(R.id.switch1);
-        boolean nav = a_Switch1.isChecked();
-        PreUtils.put(context, Constant.CONTROL_NO, no_control);
-        PreUtils.put(context, Constant.CONTROL_NAV, nav);
-
-        final String[] videoResolutions = getResources().getStringArray(R.array.options_resolution_values)[videoResolutionSpinner.getSelectedItemPosition()].split("x");
-        screenHeight = Integer.parseInt(videoResolutions[0]);
-        screenWidth = Integer.parseInt(videoResolutions[1]);
-        videoBitrate = getResources().getIntArray(R.array.options_bitrate_values)[videoBitrateSpinner.getSelectedItemPosition()];
-        delayControl = getResources().getIntArray(R.array.options_delay_values)[delayControlSpinner.getSelectedItemPosition()];
-    }
-
-    private String[] getHistoryList() {
-        String historyList = PreUtils.get(context, Constant.HISTORY_LIST_KEY, "");
-        if (TextUtils.isEmpty(historyList)) {
-            return new String[]{};
-        }
-        try {
-            JSONArray historyJson = new JSONArray(historyList);
-            String[] retList = new String[historyJson.length()];
-            for (int i = 0; i < historyJson.length(); i++) {
-                retList[i] = historyJson.get(i).toString();
-            }
-            return retList;
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        return new String[]{};
-    }
-
-    /**
-     * 保存设备历史连接记录
-     */
-    private boolean saveHistory(String device) {
-        if (headlessMode) {
-            // 无头模式不保存记录
-            return false;
-        }
-        JSONArray historyJson = new JSONArray();
-        String[] historyList = getHistoryList();
-        if (historyList.length == 0) {
-            historyJson.put(device);
-        } else {
-            try {
-                historyJson.put(0, device);
-            } catch (JSONException e) {
-                e.printStackTrace();
-            }
-            // 最多记录 30 个
-            int count = Math.min(historyList.length, 30);
-            for (int i = 0; i < count; i++) {
-                if (!historyList[i].equals(device)) {
-                    historyJson.put(historyList[i]);
-                }
-            }
-        }
-        try {
-            return PreUtils.put(context, Constant.HISTORY_LIST_KEY, historyJson.toString());
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        return false;
-    }
-
     private void swapDimensions() {
         int temp = screenHeight;
         screenHeight = screenWidth;
@@ -625,6 +522,35 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
                         | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
         surfaceView = findViewById(R.id.decoder_surface);
         surface = surfaceView.getHolder().getSurface();
+        
+        // 核心修改：增加 Surface 生命周期监听，解决黑屏问题
+        surfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override
+            public void surfaceCreated(SurfaceHolder holder) {
+                // 当画布创建时，如果服务还在连接中，说明是从后台切回来的
+                if (serviceBound) {
+                    Log.i("Scrcpy", "Surface created, updating decoder...");
+                    surface = holder.getSurface();
+                    scrcpy.setParms(surface, screenWidth, screenHeight);
+                    scrcpy.resume(); // 恢复解码
+                }
+            }
+
+            @Override
+            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+                // 这里可以处理旋转等逻辑，目前 scrcpy 已有旋转处理，这里留空即可
+            }
+
+            @Override
+            public void surfaceDestroyed(SurfaceHolder holder) {
+                // 当画布销毁时（比如切到后台），必须暂停解码，否则会 crash 或黑屏
+                if (serviceBound) {
+                    Log.i("Scrcpy", "Surface destroyed, pausing decoder...");
+                    scrcpy.pause();
+                }
+            }
+        });
+
         final LinearLayout nav_bar = findViewById(R.id.nav_button_bar);
         if (PreUtils.get(context, Constant.CONTROL_NAV, false) &&
                 !PreUtils.get(context, Constant.CONTROL_NO, false)) {
@@ -635,43 +561,6 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
         linearLayout = findViewById(R.id.container1);
         start_Scrcpy_service();
     }
-
-
-//    protected String wifiIpAddress() {
-////https://stackoverflow.com/questions/6064510/how-to-get-ip-address-of-the-device-from-code
-//        try {
-//            InetAddress ipv4 = null;
-//            InetAddress ipv6 = null;
-//            Enumeration<NetworkInterface> en = NetworkInterface.getNetworkInterfaces();
-//            if (en != null) {
-//                while (en.hasMoreElements()) {
-//                    NetworkInterface int_f = en.nextElement();
-//                    for (Enumeration<InetAddress> enumIpAddr = int_f
-//                            .getInetAddresses(); enumIpAddr.hasMoreElements(); ) {
-//                        InetAddress inetAddress = enumIpAddr.nextElement();
-//                        if (inetAddress instanceof Inet6Address) {
-//                            ipv6 = inetAddress;
-//                            continue;
-//                        }
-//                        if (inetAddress.isLoopbackAddress() && inetAddress instanceof Inet4Address) {
-//                            ipv4 = inetAddress;
-//                            continue;
-//                        }
-//                        return inetAddress.getHostAddress();
-//                    }
-//                }
-//            }
-//            if (ipv6 != null) {
-//                return ipv6.getHostAddress();
-//            }
-//            if (ipv4 != null) {
-//                return ipv4.getHostAddress();
-//            }
-//        } catch (Exception ex) {
-//            ex.printStackTrace();
-//        }
-//        return "127.0.0.1";
-//    }
 
 
     private void start_Scrcpy_service() {
@@ -746,18 +635,11 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
                             | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                             | View.SYSTEM_UI_FLAG_FULLSCREEN
                             | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
-            // 修改：如果连接保持，重新设置 Surface 并恢复
-            if (serviceBound && resumeScrcpy) {
-                if (surfaceView != null) {
-                    surface = surfaceView.getHolder().getSurface();
-                    scrcpy.setParms(surface, screenWidth, screenHeight);
-                }
-                scrcpy.resume();
-                resumeScrcpy = false;
-            } else if (serviceBound) {
-                // 原有的逻辑，黑屏无需修复， 因为只是自带的配置问题
+            
+            // onResume 里不再做 Surface 恢复操作，全部交给 surfaceCreated 回调处理
+            if (serviceBound) {
+                // 仅设置布局
                 linearLayout = findViewById(R.id.container1);
-                scrcpy.resume();
             }
         }
         if (resumeScrcpy && !result_of_Rotation && !serviceBound) {
