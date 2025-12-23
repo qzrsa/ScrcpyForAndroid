@@ -14,4 +14,6 @@ public class Constant {
     public static final String HISTORY_LIST_KEY = "history_list_key";
     public static final String USER_ID = "user_id";
 
+    // 新增：后台保持连接的配置 Key
+    public static final String KEEP_BACKGROUND = "keep_background";
 }
