@@ -63,10 +63,12 @@ jobs:
     - name: Upload to Release
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: latest
-        name: Latest Release Build
+        # 使用 版本号 + 构建编号 作为唯一 Tag，防止被覆盖
+        tag_name: v${{ env.VERSION_NAME }}-${{ github.run_number }}
+        name: Release v${{ env.VERSION_NAME }} (Build ${{ github.run_number }})
         body: |
           🚀 正式签名版本: ${{ env.VERSION_NAME }}
+          🔢 构建编号: ${{ github.run_number }}
           🔒 已签名 (Release Signed)
           📅 构建时间: ${{ steps.date.outputs.date }}
           sha: ${{ github.sha }}
