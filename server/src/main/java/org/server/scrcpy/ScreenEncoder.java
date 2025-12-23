@@ -47,7 +47,17 @@ public class ScreenEncoder implements Device.RotationListener {
         this(bitRate, DEFAULT_FRAME_RATE, DEFAULT_I_FRAME_INTERVAL);
     }
 
-    private static MediaCodec createCodec() throws IOException {
+    // 修改：增加 encoderName 参数
+    private static MediaCodec createCodec(String encoderName) throws IOException {
+        if (encoderName != null && !encoderName.isEmpty()) {
+            try {
+                Ln.d("Creating encoder by name: " + encoderName);
+                return MediaCodec.createByCodecName(encoderName);
+            } catch (IOException | IllegalArgumentException e) {
+                Ln.e("Failed to create encoder by name: " + encoderName, e);
+            }
+        }
+        // 默认回退逻辑
         return MediaCodec.createEncoderByType("video/avc");
     }
 
@@ -81,11 +91,11 @@ public class ScreenEncoder implements Device.RotationListener {
         format.setInteger(MediaFormat.KEY_HEIGHT, height);
     }
 
-    private static void setDisplaySurface(IBinder display, Surface surface, Rect deviceRect, Rect displayRect) {
+    private static void setDisplaySurface(IBinder display, Surface surface, Rect deviceRect, Rect deviceRect1) {
         SurfaceControl.openTransaction();
         try {
             SurfaceControl.setDisplaySurface(display, surface);
-            SurfaceControl.setDisplayProjection(display, 0, deviceRect, displayRect);
+            SurfaceControl.setDisplayProjection(display, 0, deviceRect, deviceRect1);
             SurfaceControl.setDisplayLayerStack(display, 0);
         } finally {
             SurfaceControl.closeTransaction();
@@ -150,7 +160,9 @@ public class ScreenEncoder implements Device.RotationListener {
         ScreenCapture capture = new ScreenCapture(device);
         try {
             do {
-                MediaCodec codec = createCodec();
+                // 修改：从 Options 中获取编码器名称
+                MediaCodec codec = createCodec(device.getOptions().getEncoderName());
+                
 //                IBinder display = createDisplay();
 //                Rect deviceRect = device.getScreenInfo().getDeviceSize().toRect();
                 Rect videoRect = device.getScreenInfo().getVideoSize().toRect();
