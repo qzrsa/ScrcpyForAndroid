@@ -38,8 +38,6 @@ import android.widget.ListPopupWindow;
 import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.Toast;
-import android.media.MediaCodecList;
-import android.media.MediaCodecInfo;
 
 import org.client.scrcpy.utils.HttpRequest;
 import org.client.scrcpy.utils.PreUtils;
@@ -55,8 +53,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.HashMap;
-import java.util.List;
-import java.util.ArrayList;
 
 
 public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, SensorEventListener {
@@ -84,9 +80,6 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
     private Surface surface;
     private Scrcpy scrcpy;
     private long timestamp = 0;
-    
-    // 新增：选中的编码器
-    private String selectedEncoder = "-";
 
     // private byte[] fileBase64;
     private LinearLayout linearLayout;
@@ -267,9 +260,6 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
 //            showDisplayWindow();
 //        });
         get_saved_preferences();
-        
-        // 新增：初始化编码器下拉框
-        initEncoderSpinner();
 
         EditText editText = findViewById(R.id.editText_server_host);
 
@@ -286,56 +276,6 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
                 scrollView.setVisibility(View.INVISIBLE);
             }
         }
-    }
-    
-    // 新增方法：初始化编码器下拉框
-    private void initEncoderSpinner() {
-        Spinner encoderSpinner = findViewById(R.id.spinner_encoder);
-        List<String> encoders = new ArrayList<>();
-        encoders.add("Default"); // 默认选项
-
-        // 获取支持 video/avc (H.264) 的编码器
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            MediaCodecList list = new MediaCodecList(MediaCodecList.REGULAR_CODECS);
-            for (MediaCodecInfo info : list.getCodecInfos()) {
-                if (!info.isEncoder()) continue;
-                try {
-                    MediaCodecInfo.CodecCapabilities caps = info.getCapabilitiesForType("video/avc");
-                    if (caps != null) {
-                        encoders.add(info.getName());
-                    }
-                } catch (IllegalArgumentException e) {
-                    // 忽略不支持 avc 的编码器
-                }
-            }
-        }
-
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, encoders);
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        encoderSpinner.setAdapter(adapter);
-
-        // 恢复上次的选择
-        String savedEncoder = PreUtils.get(context, "saved_encoder_name", "Default");
-        int spinnerPosition = adapter.getPosition(savedEncoder);
-        if (spinnerPosition >= 0) {
-            encoderSpinner.setSelection(spinnerPosition);
-        }
-
-        encoderSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                String name = encoders.get(position);
-                if ("Default".equals(name)) {
-                    selectedEncoder = "-";
-                } else {
-                    selectedEncoder = name;
-                }
-                PreUtils.put(context, "saved_encoder_name", name);
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {}
-        });
     }
 
     private void showListPopulWindow(EditText mEditText) {
@@ -385,6 +325,8 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
         final EditText editTextServerHost = findViewById(R.id.editText_server_host);
         final Switch aSwitch0 = findViewById(R.id.switch0);
         final Switch aSwitch1 = findViewById(R.id.switch1);
+        final Switch aSwitch2 = findViewById(R.id.switch2); // 新增
+
         String historySpServerAdr = PreUtils.get(context, Constant.CONTROL_REMOTE_ADDR, "");
         if (TextUtils.isEmpty(historySpServerAdr)) {
             String[] historyList = getHistoryList();
@@ -396,6 +338,8 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
         }
         aSwitch0.setChecked(PreUtils.get(context, Constant.CONTROL_NO, false));
         aSwitch1.setChecked(PreUtils.get(context, Constant.CONTROL_NAV, false));
+        aSwitch2.setChecked(PreUtils.get(context, Constant.KEEP_BACKGROUND, false)); // 新增
+
         setSpinner(R.array.options_resolution_values, R.id.spinner_video_resolution, Constant.PREFERENCE_SPINNER_RESOLUTION);
         setSpinner(R.array.options_bitrate_keys, R.id.spinner_video_bitrate, Constant.PREFERENCE_SPINNER_BITRATE);
         setSpinner(R.array.options_delay_keys, R.id.delay_control_spinner, Constant.PREFERENCE_SPINNER_DELAY);
@@ -415,6 +359,11 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
                 aSwitch1.setTextColor(Color.WHITE);
                 // aSwitch1.setVisibility(View.VISIBLE);
             }
+        });
+
+        // 新增监听器
+        aSwitch2.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            PreUtils.put(context, Constant.KEEP_BACKGROUND, isChecked);
         });
     }
 
@@ -715,9 +664,12 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
         if (serviceBound) {
             scrcpy.pause();
             resumeScrcpy = true;
-            // 返回到主页面，属于用户主动断开场景
-            showMainView(true);
-            first_time = true;
+            // 检查配置，如果未开启后台保持，则执行原来的断开逻辑
+            boolean keepBackground = PreUtils.get(context, Constant.KEEP_BACKGROUND, false);
+            if (!keepBackground) {
+                showMainView(true);
+                first_time = true;
+            }
         }
     }
 
@@ -733,17 +685,28 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
                             | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                             | View.SYSTEM_UI_FLAG_FULLSCREEN
                             | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
-            if (serviceBound) {
-                // 黑屏无需修复， 因为只是自带的配置问题
+            // 修改：如果连接保持，重新设置 Surface 并恢复
+            if (serviceBound && resumeScrcpy) {
+                if (surfaceView != null) {
+                    surface = surfaceView.getHolder().getSurface();
+                    scrcpy.setParms(surface, screenWidth, screenHeight);
+                }
+                scrcpy.resume();
+                resumeScrcpy = false;
+            } else if (serviceBound) {
+                // 原有的逻辑，黑屏无需修复， 因为只是自带的配置问题
                 linearLayout = findViewById(R.id.container1);
                 scrcpy.resume();
             }
         }
-        if (resumeScrcpy && !result_of_Rotation) {
+        if (resumeScrcpy && !result_of_Rotation && !serviceBound) {
             resumeScrcpy = false;
             connectScrcpyServer(PreUtils.get(context, Constant.CONTROL_REMOTE_ADDR, ""));
         }
-        resumeScrcpy = false;  // 两处都要resumeScrcpy设置为false
+        // 防止 resumeScrcpy 状态异常滞留
+        if (serviceBound) {
+            resumeScrcpy = false;
+        }
         result_of_Rotation = false;
     }
 
@@ -826,14 +789,11 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
                 } catch (IOException e) {
                     Log.d("Scrcpy", "File scrcpy-server.jar write faild");
                 }
-                
-                // 修改：传递选中的编码器
                 if (sendCommands.SendAdbCommands(context, serverHost,
                         serverPort,
                         localForwardPort,
                         Scrcpy.LOCAL_IP,
-                        videoBitrate, Math.max(screenHeight, screenWidth),
-                        selectedEncoder) == 0) {
+                        videoBitrate, Math.max(screenHeight, screenWidth)) == 0) {
                     ThreadUtils.post(() -> {
                         if (!MainActivity.this.isFinishing()) {
                             // 进入主线程
