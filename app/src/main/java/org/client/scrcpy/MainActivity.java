@@ -67,9 +67,10 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
     private boolean first_time = true;
     private boolean result_of_Rotation = false;
     private boolean serviceBound = false;
-    // 如果 pause 切换到后台，断开后，自动重连
-    // 该状态禁止保存恢复
+    
+    // 标记是否需要自动重连
     private boolean resumeScrcpy = false;
+    
     SensorManager sensorManager;
     private SendCommands sendCommands;
     private int videoBitrate;
@@ -93,7 +94,8 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
             scrcpy.setServiceCallbacks(MainActivity.this);
             serviceBound = true;
             if (first_time) {
-                if (!Progress.isShowing()) {
+                // 如果是自动重连，则不显示 Loading 弹窗
+                if (!Progress.isShowing() && !resumeScrcpy) {
                     Progress.showDialog(MainActivity.this, getString(R.string.please_wait));
                 }
                 scrcpy.start(surface, Scrcpy.LOCAL_IP + ":" + Scrcpy.LOCAL_FORWART_PORT,
@@ -115,7 +117,10 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
                             if (serviceBound) {
                                 showMainView();
                             }
-                            Toast.makeText(context, "Connection Timed out 2", Toast.LENGTH_SHORT).show();
+                            // 自动重连超时不弹 Toast，避免打扰
+                            if (!resumeScrcpy) {
+                                Toast.makeText(context, "Connection Timed out 2", Toast.LENGTH_SHORT).show();
+                            }
                         } else {
                             first_time = false;
                             // 连接成功后，再把按钮显示出来
@@ -145,6 +150,8 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
     // userDisconnect ：是否为用户手动断开连接
     private void showMainView(boolean userDisconnect) {
         if (scrcpy != null) {
+            // 关键：清空回调，防止 StopService 时触发 errorDisconnect
+            scrcpy.setServiceCallbacks(null);
             scrcpy.StopService();
         }
         try {
@@ -653,12 +660,12 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
     protected void onPause() {
         super.onPause();
         if (serviceBound) {
-            scrcpy.pause();
-            // 不再断开连接
-            // resumeScrcpy = true;
-            // 返回到主页面，属于用户主动断开场景
-            // showMainView(true);
-            // first_time = true;
+            // 切后台时主动断开连接，释放资源，防止 Surface 销毁导致黑屏
+            // 设置 resumeScrcpy = true，以便 onResume 时自动重连
+            resumeScrcpy = true;
+            // 传入 true (userDisconnect)，防止触发 connectExitExt 中的错误弹窗
+            showMainView(true);
+            first_time = true; // 标记下次为首次连接，需要走完整的连接流程
         }
     }
 
@@ -677,18 +684,18 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
             if (serviceBound) {
                 // 黑屏无需修复， 因为只是自带的配置问题
                 linearLayout = findViewById(R.id.container1);
-                // 更新 Surface，因为后台切回来原来的 Surface 已经销毁了
-                if (surfaceView != null) {
-                    scrcpy.setParms(surfaceView.getHolder().getSurface(), screenWidth, screenHeight);
-                }
                 scrcpy.resume();
             }
         }
+        
+        // 自动重连逻辑
         if (resumeScrcpy && !result_of_Rotation) {
-            resumeScrcpy = false;
+            // 触发自动重连
             connectScrcpyServer(PreUtils.get(context, Constant.CONTROL_REMOTE_ADDR, ""));
+            resumeScrcpy = false; // 重置标志位，防止无限循环
         }
-        resumeScrcpy = false;  // 两处都要resumeScrcpy设置为false
+        
+        resumeScrcpy = false;  // 确保重置
         result_of_Rotation = false;
     }
 
@@ -748,7 +755,11 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
             int serverPort = Integer.parseInt(serverInfo[1]);
             int localForwardPort = Scrcpy.LOCAL_FORWART_PORT;
 
-            Progress.showDialog(MainActivity.this, getString(R.string.please_wait));
+            // 如果是自动重连，则不显示 Dialog
+            if (!resumeScrcpy) {
+                Progress.showDialog(MainActivity.this, getString(R.string.please_wait));
+            }
+            
             ThreadUtils.workPost(() -> {
                 AssetManager assetManager = getAssets();
                 Log.d("Scrcpy", "File scrcpy-server.jar try write");
@@ -785,7 +796,10 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
                     });
                 } else {
                     ThreadUtils.post(Progress::closeDialog);
-                    Toast.makeText(context, "Network OR ADB connection failed", Toast.LENGTH_SHORT).show();
+                    // 自动重连失败不弹 Toast
+                    if (!resumeScrcpy) {
+                        Toast.makeText(context, "Network OR ADB connection failed", Toast.LENGTH_SHORT).show();
+                    }
                     connectExitExt();
                 }
             });
@@ -817,6 +831,13 @@ public class MainActivity extends Activity implements Scrcpy.ServiceCallbacks, S
             // 错误 3 次，则重启 adb 服务
             App.startAdbServer();
         }
+        
+        // 关键修改：如果是因为自动重连导致的退出/失败，不要弹窗，直接结束
+        if (resumeScrcpy) {
+             finishAndRemoveTask();
+             return;
+        }
+
         // 如果是无头模式，自行弹出重连选项
         if (headlessMode && !resumeScrcpy && !result_of_Rotation) {
             // 非用户主动断开、非页面切换、非横竖屏切换，才会自动弹出断连提示
