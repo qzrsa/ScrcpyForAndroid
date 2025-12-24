@@ -1,163 +1,39 @@
-name: Upgrade Scrcpy to 3.3.4
+- name: 创建 Pull Request
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  run: |
+    gh pr create \
+      --title "🚀 升级 Scrcpy Server 到 ${{ inputs.scrcpy_version }}" \
+      --body "$(cat <<'EOF'
+    ## 📦 自动升级 Scrcpy Server
 
-on:
-  workflow_dispatch:
-    inputs:
-      scrcpy_version:
-        description: 'Scrcpy 版本 (例如: v3.3.4)'
-        required: true
-        default: 'v3.3.4'
-        type: string
+    ### 更新内容
+    - ✅ 版本: \`${{ inputs.scrcpy_version }}\`
+    - ✅ versionName: \`${{ env.VERSION_NUM }}\`
+    - ✅ versionCode: \`${{ env.VERSION_CODE }}\`
+    - ✅ 下载官方 scrcpy-server.jar 并替换
+    - ✅ Debug 编译测试通过
 
-permissions:
-  contents: write
-  pull-requests: write
+    ### 变更文件
+    - \`app/src/main/assets/scrcpy-server.jar\` - 官方 Server ${{ inputs.scrcpy_version }}
+    - \`app/build.gradle\` - 版本信息更新
 
-jobs:
-  upgrade:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: 检出代码
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-      
-    - name: 配置 Git
-      run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-    
-    - name: 创建升级分支
-      run: |
-        BRANCH_NAME="upgrade-scrcpy-${{ inputs.scrcpy_version }}"
-        git checkout -b $BRANCH_NAME
-        echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
-    
-    - name: 下载 Scrcpy Server
-      run: |
-        VERSION="${{ inputs.scrcpy_version }}"
-        echo "📥 正在下载 Scrcpy Server ${VERSION}..."
-        
-        # 下载官方 server
-        wget https://github.com/Genymobile/scrcpy/releases/download/${VERSION}/scrcpy-server-${VERSION} -O scrcpy-server-temp.jar
-        
-        # 验证下载
-        if [ ! -f scrcpy-server-temp.jar ]; then
-          echo "❌ 下载失败"
-          exit 1
-        fi
-        
-        FILE_SIZE=$(stat -f%z scrcpy-server-temp.jar 2>/dev/null || stat -c%s scrcpy-server-temp.jar)
-        echo "✅ 下载成功,文件大小: $FILE_SIZE bytes"
-        
-        # 创建 assets 目录(如果不存在)
-        mkdir -p app/src/main/assets
-        
-        # 替换旧的 server 文件
-        mv scrcpy-server-temp.jar app/src/main/assets/scrcpy-server.jar
-        
-        echo "✅ Server 文件已更新"
-    
-    - name: 更新版本信息
-      run: |
-        VERSION="${{ inputs.scrcpy_version }}"
-        VERSION_NUM="${VERSION#v}"  # 移除 'v' 前缀
-        
-        echo "📝 更新版本号到 ${VERSION_NUM}..."
-        
-        # 更新 app/build.gradle
-        sed -i "s/versionName \".*\"/versionName \"${VERSION_NUM}\"/" app/build.gradle
-        
-        # 递增 versionCode
-        CURRENT_CODE=$(grep "versionCode" app/build.gradle | head -1 | awk '{print $2}')
-        NEW_CODE=$((CURRENT_CODE + 1))
-        sed -i "0,/versionCode [0-9]*/s//versionCode $NEW_CODE/" app/build.gradle
-        
-        echo "✅ 版本信息已更新: versionCode $NEW_CODE, versionName ${VERSION_NUM}"
-        echo "VERSION_NUM=$VERSION_NUM" >> $GITHUB_ENV
-        echo "VERSION_CODE=$NEW_CODE" >> $GITHUB_ENV
-    
-    - name: 设置 JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-        cache: gradle
-    
-    - name: 授予执行权限
-      run: chmod +x gradlew
-    
-    - name: 编译测试 (Debug 版本)
-      run: |
-        echo "🔨 开始编译测试..."
-        ./gradlew assembleDebug --stacktrace
-        
-        if [ $? -eq 0 ]; then
-          echo "✅ 编译成功"
-        else
-          echo "❌ 编译失败"
-          exit 1
-        fi
-    
-    - name: 提交更改
-      run: |
-        git add app/src/main/assets/scrcpy-server.jar
-        git add app/build.gradle
-        
-        git commit -m "🚀 升级 Scrcpy Server 到 ${{ inputs.scrcpy_version }}
+    ### 测试清单
+    合并前请测试以下功能:
+    - [ ] 基本连接 (有线/无线)
+    - [ ] 视频投屏显示
+    - [ ] 触控操作响应
+    - [ ] Android 5-15 设备兼容性
+    - [ ] 高分辨率支持
+    - [ ] 音频同步(如果支持)
 
-- 下载并替换官方 scrcpy-server.jar
-- 更新版本号到 ${{ env.VERSION_NUM }}
-- versionCode 递增到 ${{ env.VERSION_CODE }}
-- 编译测试通过
+    ### 官方更新日志
+    查看 scrcpy ${{ inputs.scrcpy_version }} 的完整更新日志:
+    https://github.com/Genymobile/scrcpy/releases/tag/${{ inputs.scrcpy_version }}
 
-自动生成于 GitHub Actions"
-    
-    - name: 推送分支
-      run: |
-        git push origin ${{ env.BRANCH_NAME }}
-    
-    - name: 创建 Pull Request
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        gh pr create \
-          --title "🚀 升级 Scrcpy Server 到 ${{ inputs.scrcpy_version }}" \
-          --body "## 📦 自动升级 Scrcpy Server
-
-### 更新内容
-- ✅ 版本: \`${{ inputs.scrcpy_version }}\`
-- ✅ versionName: \`${{ env.VERSION_NUM }}\`
-- ✅ versionCode: \`${{ env.VERSION_CODE }}\`
-- ✅ 下载官方 scrcpy-server.jar 并替换
-- ✅ Debug 编译测试通过
-
-### 变更文件
-- \`app/src/main/assets/scrcpy-server.jar\` - 官方 Server ${{ inputs.scrcpy_version }}
-- \`app/build.gradle\` - 版本信息更新
-
-### 测试清单
-合并前请测试以下功能:
-- [ ] 基本连接 (有线/无线)
-- [ ] 视频投屏显示
-- [ ] 触控操作响应
-- [ ] Android 5-15 设备兼容性
-- [ ] 高分辨率支持
-- [ ] 音频同步(如果支持)
-
-### 官方更新日志
-查看 scrcpy ${{ inputs.scrcpy_version }} 的完整更新日志:
-https://github.com/Genymobile/scrcpy/releases/tag/${{ inputs.scrcpy_version }}
-
----
-*🤖 此 PR 由 GitHub Actions 自动创建*" \
-          --base main \
-          --head ${{ env.BRANCH_NAME }}
-    
-    - name: 上传 Debug APK 供测试
-      uses: actions/upload-artifact@v4
-      with:
-        name: scrcpy-${{ env.VERSION_NUM }}-debug-test
-        path: app/build/outputs/apk/debug/*.apk
-        retention-days: 7
+    ---
+    *🤖 此 PR 由 GitHub Actions 自动创建*
+    EOF
+    )" \
+      --base main \
+      --head ${{ env.BRANCH_NAME }}
