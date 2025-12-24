@@ -15,24 +15,116 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
       
-    - name: Update Scrcpy to v${{ github.event.inputs.scrcpy_version }}
+    - name: Check if version exists
+      id: check-version
+      run: |
+        VERSION="${{ github.event.inputs.scrcpy_version }}"
+        echo "Checking Scrcpy version v${VERSION}..."
+        
+        # 检查该版本是否存在
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+          "https://github.com/Genymobile/scrcpy/releases/tag/v${VERSION}")
+        
+        if [ "$HTTP_CODE" != "200" ]; then
+          echo "Error: Scrcpy version v${VERSION} does not exist!"
+          exit 1
+        fi
+        
+        echo "Version v${VERSION} found!"
+        
+    - name: Download Scrcpy server binary
+      run: |
+        VERSION="${{ github.event.inputs.scrcpy_version }}"
+        echo "Downloading scrcpy-server v${VERSION}..."
+        
+        # 创建临时目录
+        mkdir -p temp_download
+        cd temp_download
+        
+        # 下载 scrcpy-server 文件
+        wget "https://github.com/Genymobile/scrcpy/releases/download/v${VERSION}/scrcpy-server-v${VERSION}" \
+          -O scrcpy-server-v${VERSION}
+        
+        # 验证文件已下载
+        if [ ! -f "scrcpy-server-v${VERSION}" ]; then
+          echo "Error: Failed to download scrcpy-server"
+          exit 1
+        fi
+        
+        echo "Downloaded: $(ls -lh scrcpy-server-v${VERSION})"
+        cd ..
+        
+    - name: Update project files
       run: |
         VERSION="${{ github.event.inputs.scrcpy_version }}"
         
-        # 更新 build.gradle.kts 中的版本号
-        sed -i "s/scrcpy:[0-9.]\+/scrcpy:${VERSION}/g" app/build.gradle.kts
-        
-        # 下载 scrcpy-server
-        wget https://github.com/Genymobile/scrcpy/releases/download/v${VERSION}/scrcpy-server-v${VERSION}
+        # 创建 assets 目录
         mkdir -p app/src/main/assets
-        mv scrcpy-server-v${VERSION} app/src/main/assets/scrcpy-server
+        
+        # 移动 scrcpy-server 文件
+        mv temp_download/scrcpy-server-v${VERSION} app/src/main/assets/scrcpy-server
+        
+        # 创建或更新版本信息文件
+        echo "${VERSION}" > app/src/main/assets/scrcpy-version.txt
+        
+        # 如果有 README,更新版本信息
+        if [ -f "README.md" ]; then
+          sed -i "s/Scrcpy [0-9.]\+/Scrcpy ${VERSION}/g" README.md || true
+          sed -i "s/scrcpy-[0-9.]\+/scrcpy-${VERSION}/g" README.md || true
+        fi
+        
+        # 更新 app/build.gradle.kts 中的版本号(如果有相关注释)
+        if [ -f "app/build.gradle.kts" ]; then
+          # 在文件顶部添加或更新注释
+          if grep -q "// Scrcpy version:" app/build.gradle.kts; then
+            sed -i "s#// Scrcpy version: .*#// Scrcpy version: ${VERSION}#g" app/build.gradle.kts
+          else
+            sed -i "1i// Scrcpy version: ${VERSION}" app/build.gradle.kts
+          fi
+        fi
+        
+        echo "Files updated successfully!"
+        
+    - name: Clean up
+      run: |
+        rm -rf temp_download
+        
+    - name: Verify changes
+      run: |
+        echo "=== Modified files ==="
+        git status
+        echo ""
+        echo "=== Assets directory ==="
+        ls -lh app/src/main/assets/ || echo "Assets directory not found"
         
     - name: Create Pull Request
       uses: peter-evans/create-pull-request@v6
       with:
+        token: ${{ secrets.GITHUB_TOKEN }}
         commit-message: "chore: upgrade Scrcpy to v${{ github.event.inputs.scrcpy_version }}"
         title: "升级 Scrcpy 到 v${{ github.event.inputs.scrcpy_version }}"
         body: |
-          手动升级 Scrcpy 到版本 ${{ github.event.inputs.scrcpy_version }}
+          ## 🚀 自动升级 Scrcpy 版本
+          
+          **新版本**: v${{ github.event.inputs.scrcpy_version }}
+          
+          ### 📦 更改内容
+          - ✅ 下载最新的 scrcpy-server 二进制文件
+          - ✅ 更新到 `app/src/main/assets/scrcpy-server`
+          - ✅ 创建版本标记文件
+          - ✅ 更新相关文档
+          
+          ### 📝 发布说明
+          查看 Scrcpy v${{ github.event.inputs.scrcpy_version }} 的完整发布说明:
+          https://github.com/Genymobile/scrcpy/releases/tag/v${{ github.event.inputs.scrcpy_version }}
+          
+          ---
+          🤖 此 PR 由 GitHub Actions 自动创建
         branch: upgrade-scrcpy-v${{ github.event.inputs.scrcpy_version }}
+        delete-branch: true
+        labels: |
+          enhancement
+          dependencies
