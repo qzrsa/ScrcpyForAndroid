@@ -16,7 +16,7 @@
         android:id="@+id/decoder_surface"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:keepScreenOn="true"  android:layout_weight="1" />
+        android:layout_weight="1" />
 
     <LinearLayout
         android:id="@+id/nav_button_bar"
