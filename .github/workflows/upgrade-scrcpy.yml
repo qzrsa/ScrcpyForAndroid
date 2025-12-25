@@ -106,13 +106,13 @@ jobs:
         git add app/build.gradle
         
         git commit -m "🚀 升级 Scrcpy Server 到 ${{ inputs.scrcpy_version }}
-
-- 下载并替换官方 scrcpy-server.jar
-- 更新版本号到 ${{ env.VERSION_NUM }}
-- versionCode 递增到 ${{ env.VERSION_CODE }}
-- 编译测试通过
-
-自动生成于 GitHub Actions"
+        
+        - 下载并替换官方 scrcpy-server.jar
+        - 更新版本号到 ${{ env.VERSION_NUM }}
+        - versionCode 递增到 ${{ env.VERSION_CODE }}
+        - 编译测试通过
+        
+        自动生成于 GitHub Actions"
     
     - name: 推送分支
       run: |
@@ -122,39 +122,38 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
+        PR_BODY="## 📦 自动升级 Scrcpy Server
+        
+        ### 更新内容
+        - ✅ 版本: ${{ inputs.scrcpy_version }}
+        - ✅ versionName: ${{ env.VERSION_NUM }}
+        - ✅ versionCode: ${{ env.VERSION_CODE }}
+        - ✅ 下载官方 scrcpy-server.jar 并替换
+        - ✅ Debug 编译测试通过
+        
+        ### 变更文件
+        - app/src/main/assets/scrcpy-server.jar - 官方 Server ${{ inputs.scrcpy_version }}
+        - app/build.gradle - 版本信息更新
+        
+        ### 测试清单
+        合并前请测试以下功能:
+        - [ ] 基本连接 (有线/无线)
+        - [ ] 视频投屏显示
+        - [ ] 触控操作响应
+        - [ ] Android 5-15 设备兼容性
+        - [ ] 高分辨率支持
+        - [ ] 音频同步(如果支持)
+        
+        ### 官方更新日志
+        查看 scrcpy ${{ inputs.scrcpy_version }} 的完整更新日志:
+        https://github.com/Genymobile/scrcpy/releases/tag/${{ inputs.scrcpy_version }}
+        
+        ---
+        *🤖 此 PR 由 GitHub Actions 自动创建*"
+        
         gh pr create \
           --title "🚀 升级 Scrcpy Server 到 ${{ inputs.scrcpy_version }}" \
-          --body "$(cat <<'EOF'
-## 📦 自动升级 Scrcpy Server
-
-### 更新内容
-- ✅ 版本: ${{ inputs.scrcpy_version }}
-- ✅ versionName: ${{ env.VERSION_NUM }}
-- ✅ versionCode: ${{ env.VERSION_CODE }}
-- ✅ 下载官方 scrcpy-server.jar 并替换
-- ✅ Debug 编译测试通过
-
-### 变更文件
-- app/src/main/assets/scrcpy-server.jar - 官方 Server ${{ inputs.scrcpy_version }}
-- app/build.gradle - 版本信息更新
-
-### 测试清单
-合并前请测试以下功能:
-- [ ] 基本连接 (有线/无线)
-- [ ] 视频投屏显示
-- [ ] 触控操作响应
-- [ ] Android 5-15 设备兼容性
-- [ ] 高分辨率支持
-- [ ] 音频同步(如果支持)
-
-### 官方更新日志
-查看 scrcpy ${{ inputs.scrcpy_version }} 的完整更新日志:
-https://github.com/Genymobile/scrcpy/releases/tag/${{ inputs.scrcpy_version }}
-
----
-*🤖 此 PR 由 GitHub Actions 自动创建*
-EOF
-)" \
+          --body "$PR_BODY" \
           --base main \
           --head ${{ env.BRANCH_NAME }}
     
