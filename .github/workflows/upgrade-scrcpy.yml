@@ -102,7 +102,8 @@ jobs:
     
     - name: 提交更改
       run: |
-        git add app/src/main/assets/scrcpy-server.jar
+        # 使用 -f 强制添加被 .gitignore 忽略的文件
+        git add -f app/src/main/assets/scrcpy-server.jar
         git add app/build.gradle
         
         git commit -m "🚀 升级 Scrcpy Server 到 ${{ inputs.scrcpy_version }}
